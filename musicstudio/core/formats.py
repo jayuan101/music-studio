@@ -157,7 +157,7 @@ MP3 = FormatProfile(
     supported_sample_rates=(48000, 44100, 32000, 24000, 22050, 16000, 12000, 11025, 8000),
     description=(
         "Universally playable. V0 variable bitrate is the best MP3 quality "
-        "worth having -- 320 kbps constant is bigger with no audible gain."
+        "worth having \u2014 320 kbps constant is bigger with no audible gain."
     ),
 )
 
