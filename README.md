@@ -1,0 +1,164 @@
+# Music Studio
+
+A Windows desktop app for getting music in, getting it right, and getting it
+out in whatever format you need — at the best quality the source allows.
+
+- **Import** anything ffmpeg can decode (which is essentially everything).
+- **Download** from YouTube or any of the 1700+ sites yt-dlp supports.
+- **Convert** to FLAC, ALAC, WAV, AIFF, WavPack, MP3, AAC, Opus, Vorbis or WMA.
+- **Edit** — trim, cut, boost volume well past the normal ceiling, normalise,
+  fade, change speed and pitch, equalise, strip silence, remap channels.
+- **Tag** every field, across every container, with cover art fetched
+  automatically from MusicBrainz and iTunes.
+
+---
+
+## The quality rule
+
+Most converters quietly degrade audio. This one does not, and says so when it
+cannot help:
+
+| Rule | What it means |
+|---|---|
+| **One encode generation** | Edits and format changes compose into a *single* ffmpeg pass. Ten stacked effects still cost one encode, not ten. |
+| **Nothing changes unasked** | Source sample rate and bit depth are preserved unless you change them or the target format genuinely cannot store them. |
+| **No silent resampling** | When resampling is unavoidable, it uses `soxr` at precision 28, with triangular dither on any bit-depth reduction. |
+| **Honest warnings** | Converting an MP3 to FLAC says plainly that it cannot restore detail and will only grow the file. It still lets you do it. |
+| **Maximum encoder settings** | FLAC at compression level 8, MP3 at LAME V0, Opus at 192k VBR, AAC at 256k (using libfdk_aac where available). |
+
+A `LOSSLESS` / `LOSSY` badge is visible wherever a file is shown, so you always
+know what you are working with.
+
+---
+
+## Turning things up
+
+The gain slider runs to **+30 dB (about 3000%)**, for quiet recordings, faint
+voice memos and old rips. What happens past full scale is your choice:
+
+- **Boost, then limit** *(default)* — a lookahead limiter catches peaks at a
+  configurable true-peak ceiling (−0.3 dBTP by default). Genuinely loud, no
+  clipping distortion.
+- **Compress, then boost** — squashes peaks first so makeup gain lifts the whole
+  track. The loudest option; costs dynamic range.
+- **Raw gain** — no limiter, clipping allowed. **Measure clipping** tells you
+  exactly how many samples flatten, so it is a decision rather than a surprise.
+
+There is also a one-click **dynamic normalisation** for making everything loud,
+and EBU R128 loudness normalisation (proper two-pass, not the inaccurate
+single-pass form) for matching streaming levels.
+
+All processing runs in 32-bit float, so intermediate stages have effectively
+unlimited headroom and only the final encode quantises.
+
+---
+
+## Cover art
+
+Artwork is looked up from two sources, neither needing an API key or signup:
+
+1. **MusicBrainz → Cover Art Archive** — matches a specific release, so it is
+   the most accurate. Rate-limited to 1 request/second as their rules require.
+2. **iTunes Search API** — the fallback, and reliably high resolution: the
+   100×100 thumbnail URL it returns is rewritten to fetch up to 1200×1200.
+
+**Update all artwork** scans your library, fills in what is missing, and
+optionally replaces embedded images below a resolution you set — which is what
+"keep artwork up to date" means for a library full of decade-old 200px
+thumbnails. Hits *and* misses are cached, so repeat scans are fast and stay
+polite to free services. You can always drag in your own image instead.
+
+---
+
+## Downloading
+
+Paste a link and pick one of two modes:
+
+- **Keep the original stream** — no re-encoding, so no second generation of
+  loss. This is the genuine best quality available.
+- **Convert to a format you choose** — same pipeline as any other conversion.
+
+Streaming sites serve lossy audio, so saving a download as FLAC makes a much
+larger file without recovering anything. The app tells you that at the moment
+you pick the format, rather than after the file is on disk.
+
+Playlists are supported, with an optional limit. Downloads flow straight into
+the tagging and artwork pipeline.
+
+---
+
+## Running it
+
+### From a release
+
+Download `MusicStudio-Windows-*.zip`, unzip it anywhere, run `MusicStudio.exe`.
+ffmpeg is bundled — there is nothing else to install.
+
+### From source
+
+```bash
+cd music-studio
+pip install -r requirements.txt
+python -m musicstudio
+```
+
+You will need `ffmpeg` and `ffprobe` on your PATH, or placed in
+`music-studio/vendor/ffmpeg/`.
+
+### Building the Windows executable
+
+```bash
+pip install -r requirements-dev.txt
+# put ffmpeg.exe and ffprobe.exe in vendor/ffmpeg/
+pyinstaller --noconfirm --clean MusicStudio.spec
+```
+
+Output lands in `dist/MusicStudio/`. CI does this automatically — see
+`.github/workflows/build-music-studio.yml`, which runs on `music-v*` tags or on
+demand, and downloads ffmpeg itself.
+
+---
+
+## Tests
+
+```bash
+python -m pytest tests -q
+```
+
+206 tests covering the filter-graph builder, the quality policy, real encodes
+into all ten output formats, tag round-trips through every container, the
+artwork provider chain (against mocked HTTP) and the library index. Tests that
+need audio generate it with ffmpeg rather than committing binary fixtures.
+
+---
+
+## How it fits together
+
+```
+musicstudio/
+├── core/
+│   ├── ffmpeg.py     binary resolution, progress parsing, cancellation
+│   ├── probe.py      AudioInfo, lossless detection, clipping measurement
+│   ├── formats.py    the ten output formats and their best settings
+│   ├── convert.py    quality policy + single-pass command builder
+│   ├── edit.py       the filter-graph builder
+│   ├── tags.py       one TagSet over ID3 / Vorbis / MP4 / APEv2 / ASF
+│   ├── artwork.py    MusicBrainz, Cover Art Archive, iTunes
+│   ├── download.py   yt-dlp wrapper
+│   └── jobs.py       background queue with progress and cancel
+├── db.py             SQLite library index
+└── ui/               PySide6 panels, waveform widget, activity dock
+```
+
+`core/` has no dependency on Qt, so the whole engine is testable headlessly.
+
+---
+
+## Notes
+
+- **Licence:** mutagen is GPL-2.0-or-later and the bundled ffmpeg is a GPL
+  build, so the distributed application is effectively GPL.
+- **Downloading from YouTube** conflicts with its Terms of Service. Sensible for
+  your own content or content you hold rights to.
+- **No tool can make a lossy file lossless.** Where that matters, the app says
+  so at the point of the decision instead of implying an upgrade.
