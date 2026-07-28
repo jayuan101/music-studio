@@ -76,8 +76,12 @@ class AudioInfo:
     def bitrate_kbps(self) -> int:
         return round(self.bitrate / 1000) if self.bitrate else 0
 
-    def describe(self) -> str:
-        """A one-line technical summary for the UI."""
+    def describe_technical(self) -> str:
+        """Codec, rate, depth, channels and bitrate -- with no lossless verdict.
+
+        Used next to the lossless/lossy badge, which already says that part;
+        including it here too reads as "LOSSY · … · lossy".
+        """
         parts = [self.codec.upper()]
         if self.sample_rate:
             parts.append(f"{self.sample_rate / 1000:g} kHz")
@@ -87,8 +91,11 @@ class AudioInfo:
             parts.append(self.channel_layout or f"{self.channels}ch")
         if self.bitrate_kbps:
             parts.append(f"{self.bitrate_kbps} kbps")
-        parts.append("lossless" if self.is_lossless else "lossy")
         return " · ".join(parts)
+
+    def describe(self) -> str:
+        """A one-line technical summary, including whether it is lossless."""
+        return f"{self.describe_technical()} · {'lossless' if self.is_lossless else 'lossy'}"
 
 
 def _to_int(value, default: int = 0) -> int:
