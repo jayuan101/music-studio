@@ -415,6 +415,17 @@ def _apply_download_metadata(
     """Write what the site told us into the file's tags."""
     existing = tags_module.try_read(track.path)
 
+    # Record where the file came from. Fall back through the entry and the
+    # original request so the tag is never blank just because one of yt-dlp's
+    # url fields was missing.
+    source_url = (
+        track.url
+        or entry.get("webpage_url")
+        or entry.get("original_url")
+        or request.url
+    )
+    track.url = source_url
+
     # yt-dlp often parses "Artist - Title" out of the video title for music
     # content; prefer those fields over the raw title when present.
     artist = entry.get("artist") or entry.get("creator") or entry.get("uploader") or ""
@@ -433,7 +444,7 @@ def _apply_download_metadata(
         albumartist=str(entry.get("album_artist") or artist),
         date=str(entry.get("release_year") or (entry.get("upload_date") or "")[:4] or ""),
         genre=str(entry.get("genre") or ""),
-        source_url=track.url,
+        source_url=source_url,
         encoded_by="Music Studio",
     )
     merged = existing.merged_with(new_tags)

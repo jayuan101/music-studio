@@ -281,7 +281,13 @@ class Library:
             stat = path.stat()
         except OSError:
             return True
-        return stat.st_size != row["size_bytes"] or abs(stat.st_mtime - row["modified_time"]) > 1
+        # A 1-second tolerance here meant an edit made in the same second as
+        # the last scan was never picked up. Rescanning spuriously is cheap;
+        # serving stale tags is not, so bias towards re-reading.
+        return (
+            stat.st_size != row["size_bytes"]
+            or abs(stat.st_mtime - row["modified_time"]) > 0.001
+        )
 
     def stats(self) -> dict:
         conn = self._connect()
