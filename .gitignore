@@ -9,3 +9,5 @@ venv/
 
 # Bundled ffmpeg binaries are downloaded at build time, never committed.
 vendor/
+
+*.spec.bak
