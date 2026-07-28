@@ -1,0 +1,301 @@
+"""Cover art lookup.
+
+HTTP is mocked throughout: these tests verify the provider chain, caching and
+rate limiting, not that MusicBrainz is reachable.
+"""
+
+from __future__ import annotations
+
+import time
+
+import httpx
+import pytest
+
+from musicstudio.config import get_settings
+from musicstudio.core import artwork
+from musicstudio.core import tags as T
+
+
+@pytest.fixture(autouse=True)
+def artwork_dirs():
+    from musicstudio import config
+
+    config.ARTWORK_CACHE_DIR.mkdir(parents=True, exist_ok=True)
+    # The module captured the directory at import time; point it at the
+    # per-test location so caching does not leak between tests.
+    original = artwork.ARTWORK_CACHE_DIR
+    artwork.ARTWORK_CACHE_DIR = config.ARTWORK_CACHE_DIR
+    yield
+    artwork.ARTWORK_CACHE_DIR = original
+
+
+class FakeResponse:
+    def __init__(self, status_code=200, json_data=None, content=b""):
+        self.status_code = status_code
+        self._json = json_data or {}
+        self.content = content
+        self.text = ""
+
+    def json(self):
+        return self._json
+
+    def raise_for_status(self):
+        if self.status_code >= 400:
+            raise httpx.HTTPStatusError("error", request=None, response=None)
+
+
+class FakeClient:
+    """Stands in for httpx.Client, routing by URL substring."""
+
+    def __init__(self, routes):
+        self.routes = routes
+        self.calls = []
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *args):
+        return False
+
+    def get(self, url, params=None, **kwargs):
+        self.calls.append((url, params))
+        for fragment, response in self.routes.items():
+            if fragment in url:
+                return response() if callable(response) else response
+        return FakeResponse(status_code=404)
+
+
+def install_client(monkeypatch, routes) -> FakeClient:
+    client = FakeClient(routes)
+    monkeypatch.setattr(artwork, "_client", lambda *a, **k: client)
+    return client
+
+
+MB_HIT = FakeResponse(
+    json_data={
+        "releases": [
+            {"id": "mbid-1", "score": 95, "title": "Neon Cartography",
+             "artist-credit": [{"name": "The Rearview"}]}
+        ]
+    }
+)
+MB_EMPTY = FakeResponse(json_data={"releases": []})
+
+
+# ---------------------------------------------------------------------------
+# Provider chain
+# ---------------------------------------------------------------------------
+
+
+def test_musicbrainz_hit_returns_cover_art_archive_image(monkeypatch, cover_png):
+    install_client(monkeypatch, {
+        "musicbrainz.org": MB_HIT,
+        "coverartarchive.org": FakeResponse(content=cover_png),
+    })
+    found = artwork.find_artwork("The Rearview", "Neon Cartography", use_cache=False)
+    assert found is not None
+    assert found.source == "Cover Art Archive"
+    assert found.data == cover_png
+    assert found.score == pytest.approx(0.95)
+
+
+def test_falls_back_to_itunes_when_musicbrainz_has_no_art(monkeypatch, cover_png):
+    """The fallback is the whole reason iTunes is wired in."""
+    install_client(monkeypatch, {
+        "musicbrainz.org": MB_EMPTY,
+        "itunes.apple.com/search": FakeResponse(
+            json_data={"results": [{
+                "artworkUrl100": "https://is1.mzstatic.com/image/thumb/x/100x100bb.jpg",
+                "artistName": "The Rearview", "collectionName": "Neon Cartography",
+            }]}
+        ),
+        "mzstatic.com": FakeResponse(content=cover_png),
+    })
+    found = artwork.find_artwork("The Rearview", "Neon Cartography", use_cache=False)
+    assert found is not None
+    assert found.source == "iTunes"
+    assert found.data == cover_png
+
+
+def test_itunes_url_is_upgraded_to_full_resolution():
+    upgraded = artwork._upgrade_itunes_url(
+        "https://is1.mzstatic.com/image/thumb/abc/100x100bb.jpg", 1200
+    )
+    assert "1200x1200bb" in upgraded
+    assert "100x100bb" not in upgraded
+
+
+def test_itunes_url_without_the_token_is_left_alone():
+    url = "https://example.com/cover.jpg"
+    assert artwork._upgrade_itunes_url(url, 1200) == url
+
+
+def test_returns_none_when_every_provider_misses(monkeypatch):
+    install_client(monkeypatch, {
+        "musicbrainz.org": MB_EMPTY,
+        "itunes.apple.com": FakeResponse(json_data={"results": []}),
+    })
+    assert artwork.find_artwork("Nobody", "Nothing", use_cache=False) is None
+
+
+def test_network_failure_is_swallowed(monkeypatch):
+    class ExplodingClient(FakeClient):
+        def get(self, *args, **kwargs):
+            raise httpx.ConnectError("no network")
+
+    monkeypatch.setattr(artwork, "_client", lambda *a, **k: ExplodingClient({}))
+    assert artwork.find_artwork("A", "B", use_cache=False) is None
+
+
+def test_tiny_responses_are_rejected_as_placeholders(monkeypatch):
+    install_client(monkeypatch, {
+        "musicbrainz.org": MB_HIT,
+        "coverartarchive.org": FakeResponse(content=b"tiny"),
+        "itunes.apple.com": FakeResponse(json_data={"results": []}),
+    })
+    assert artwork.find_artwork("A", "B", use_cache=False) is None
+
+
+def test_musicbrainz_is_skipped_without_an_album(monkeypatch, cover_png):
+    """Searching the release database with no release name is pointless."""
+    client = install_client(monkeypatch, {
+        "itunes.apple.com/search": FakeResponse(
+            json_data={"results": [{"artworkUrl100": "https://x/100x100bb.jpg"}]}
+        ),
+        "https://x/": FakeResponse(content=cover_png),
+    })
+    artwork.find_artwork("Some Artist", "", title="A Song", use_cache=False)
+    assert not any("musicbrainz" in url for url, _ in client.calls)
+
+
+def test_lucene_special_characters_are_escaped():
+    query = artwork._build_musicbrainz_query("AC/DC", "Who Made Who?")
+    assert "\\/" in query
+    assert "\\?" in query
+
+
+# ---------------------------------------------------------------------------
+# Caching
+# ---------------------------------------------------------------------------
+
+
+def test_second_lookup_is_served_from_cache(monkeypatch, cover_png):
+    client = install_client(monkeypatch, {
+        "musicbrainz.org": MB_HIT,
+        "coverartarchive.org": FakeResponse(content=cover_png),
+    })
+    first = artwork.find_artwork("The Rearview", "Neon Cartography")
+    assert first.source == "Cover Art Archive"
+
+    calls_after_first = len(client.calls)
+    second = artwork.find_artwork("The Rearview", "Neon Cartography")
+    assert second.source == "cache"
+    assert second.data == cover_png
+    assert len(client.calls) == calls_after_first  # no new requests
+
+
+def test_misses_are_cached_so_scans_do_not_requery(monkeypatch):
+    client = install_client(monkeypatch, {
+        "musicbrainz.org": MB_EMPTY,
+        "itunes.apple.com": FakeResponse(json_data={"results": []}),
+    })
+    assert artwork.find_artwork("Nobody", "Nothing") is None
+    calls = len(client.calls)
+    assert artwork.find_artwork("Nobody", "Nothing") is None
+    assert len(client.calls) == calls
+
+
+def test_clear_cache_removes_entries(monkeypatch, cover_png):
+    install_client(monkeypatch, {
+        "musicbrainz.org": MB_HIT,
+        "coverartarchive.org": FakeResponse(content=cover_png),
+    })
+    artwork.find_artwork("A", "B")
+    assert artwork.clear_cache() > 0
+    assert artwork.read_cache("A", "B", get_settings().artwork_preferred_size) is None
+
+
+# ---------------------------------------------------------------------------
+# Rate limiting
+# ---------------------------------------------------------------------------
+
+
+def test_rate_limiter_spaces_calls_out():
+    """MusicBrainz blocks clients that exceed one request per second."""
+    limiter = artwork.RateLimiter(0.15)
+    started = time.monotonic()
+    for _ in range(3):
+        limiter.wait()
+    assert time.monotonic() - started >= 0.28
+
+
+# ---------------------------------------------------------------------------
+# needs_artwork policy
+# ---------------------------------------------------------------------------
+
+
+def test_missing_art_needs_updating():
+    assert artwork.needs_artwork(T.TagSet())
+
+
+def test_small_art_is_upgraded():
+    """'Keep artwork up to date' means replacing old low-resolution thumbnails."""
+    small = T.Artwork(b"x" * 5000, width=200, height=200)
+    assert artwork.needs_artwork(T.TagSet(artwork=small))
+
+
+def test_large_art_is_left_alone():
+    large = T.Artwork(b"x" * 200_000, width=1200, height=1200)
+    assert not artwork.needs_artwork(T.TagSet(artwork=large))
+
+
+def test_unknown_dimensions_judged_by_file_size():
+    assert artwork.needs_artwork(T.TagSet(artwork=T.Artwork(b"x" * 1000)))
+    assert not artwork.needs_artwork(T.TagSet(artwork=T.Artwork(b"x" * 200_000)))
+
+
+# ---------------------------------------------------------------------------
+# Applying to files
+# ---------------------------------------------------------------------------
+
+
+def test_update_file_embeds_found_art(monkeypatch, tone_flac, cover_png):
+    T.write(tone_flac, T.TagSet(artist="The Rearview", album="Neon Cartography"))
+    install_client(monkeypatch, {
+        "musicbrainz.org": MB_HIT,
+        "coverartarchive.org": FakeResponse(content=cover_png),
+    })
+
+    result = artwork.update_file_artwork(tone_flac)
+    assert result.updated
+    assert T.read(tone_flac).artwork.data == cover_png
+
+
+def test_update_skips_files_that_already_have_good_art(monkeypatch, tone_flac, cover_png):
+    big = T.Artwork(cover_png, width=1200, height=1200)
+    T.write(tone_flac, T.TagSet(artist="A", album="B"), artwork=big)
+    result = artwork.update_file_artwork(tone_flac)
+    assert not result.updated
+    assert "Already has" in result.reason
+
+
+def test_update_needs_something_to_search_with(tone_flac):
+    T.write(tone_flac, T.TagSet())
+    result = artwork.update_file_artwork(tone_flac)
+    assert not result.updated
+    assert "No artist or album" in result.reason
+
+
+def test_batch_continues_past_a_failing_file(monkeypatch, tone_flac, tmp_path, cover_png):
+    T.write(tone_flac, T.TagSet(artist="The Rearview", album="Neon Cartography"))
+    broken = tmp_path / "broken.flac"
+    broken.write_bytes(b"not audio at all")
+
+    install_client(monkeypatch, {
+        "musicbrainz.org": MB_HIT,
+        "coverartarchive.org": FakeResponse(content=cover_png),
+    })
+
+    results = artwork.update_library_artwork([broken, tone_flac])
+    assert len(results) == 2
+    assert sum(1 for r in results if r.updated) == 1

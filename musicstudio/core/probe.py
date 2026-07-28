@@ -8,6 +8,7 @@ depth are, and therefore what a conversion can and cannot preserve.
 from __future__ import annotations
 
 import json
+import re
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -162,6 +163,12 @@ def probe(path: str | Path) -> AudioInfo:
     stream = streams[0]
     fmt = data.get("format") or {}
 
+    # ffprobe will happily label 20 bytes of text as a FLAC stream, reporting
+    # sample_rate 0 and channels 0. Accepting that would put a garbage row in
+    # the library and fail confusingly later, so reject it here.
+    if _to_int(stream.get("sample_rate")) <= 0 or _to_int(stream.get("channels")) <= 0:
+        raise ValueError(f"{path.name} contains no decodable audio")
+
     raw_tags = {**(fmt.get("tags") or {}), **(stream.get("tags") or {})}
     tags = {str(k).lower(): str(v) for k, v in raw_tags.items()}
 
@@ -268,21 +275,41 @@ class ClippingReport:
         )
 
 
+_ASTATS_LABEL = re.compile(r"\[Parsed_astats_(\d+)\s*@")
+
+
 def _parse_astats_blocks(stderr: str) -> list[dict[str, float]]:
-    """Split ffmpeg stderr into one dict per astats instance, in chain order."""
-    blocks: list[dict[str, float]] = []
+    """Split ffmpeg stderr into one dict per astats instance, in *chain* order.
+
+    ffmpeg does not print filter summaries in chain order -- it tears the graph
+    down in reverse, so the last astats in the chain reports first. Ordering by
+    the ``Parsed_astats_N`` index instead of by appearance is the only reliable
+    way to tell which measurement came from which point in the chain.
+    """
+    blocks: dict[int, dict[str, float]] = {}
     current: dict[str, float] | None = None
+
     for raw in stderr.splitlines():
-        line = raw.split("] ", 1)[-1].strip() if "] " in raw else raw.strip()
-        if line == "Overall":
-            current = {}
-            blocks.append(current)
+        match = _ASTATS_LABEL.search(raw)
+        if match is None:
             continue
-        if current is None or ":" not in line:
+        index = int(match.group(1))
+        line = raw.split("] ", 1)[-1].strip()
+
+        if line == "Overall":
+            current = blocks.setdefault(index, {})
+            continue
+        if ":" not in line:
+            continue
+        target = blocks.setdefault(index, {})
+        # Per-channel sections repeat the keys; only the Overall block is set
+        # as `current`, so ignore anything arriving before it.
+        if current is not target:
             continue
         key, _, value = line.partition(":")
-        current[key.strip()] = _to_float(value.strip(), 0.0)
-    return blocks
+        target[key.strip()] = _to_float(value.strip(), 0.0)
+
+    return [blocks[index] for index in sorted(blocks)]
 
 
 def measure_clipping(path: str | Path, gain_db: float = 0.0) -> ClippingReport:
