@@ -312,21 +312,39 @@ def _parse_astats_blocks(stderr: str) -> list[dict[str, float]]:
     return [blocks[index] for index in sorted(blocks)]
 
 
-def measure_clipping(path: str | Path, gain_db: float = 0.0) -> ClippingReport:
-    """Measure what ``gain_db`` does to ``path``: true peak and clipped samples.
+def measure_clipping(
+    path: str | Path,
+    gain_db: float = 0.0,
+    *,
+    filters: list[str] | None = None,
+) -> ClippingReport:
+    """Measure the true peak and clipped-sample count of a processed signal.
 
     ffmpeg processes in 32-bit float, which never clips, so the true peak is
-    read from a float-domain ``astats``. The file is then clamped to a fixed
+    read from a float-domain ``astats``. The signal is then clamped to a fixed
     integer format and measured again -- samples pinned to full scale there are
-    exactly the ones the encoder would flatten. This is what the editor shows
-    when you push the gain past the ceiling in raw mode, so the tradeoff is a
-    number on screen rather than a surprise in your speakers.
+    exactly the ones the encoder would flatten.
+
+    ``filters`` is the processing to measure *through*, normally the editor's
+    real filter chain from ``edit.build_filter_chain``. Passing only ``gain_db``
+    measures a bare gain, which is a different signal: a boost with the limiter
+    engaged does not clip, and reporting that it does steers people away from
+    the mode they should be using. Whatever the caller wants the number to
+    describe has to actually be in the chain.
+
+    Callers pass a prebuilt chain rather than an EditSpec so this module keeps
+    no dependency on ``edit`` -- ``edit`` already imports from here.
     """
     path = Path(path)
-    gain = f"volume={gain_db:.4f}dB," if gain_db else ""
+    if filters:
+        prefix = ",".join(filters) + ","
+    elif gain_db:
+        prefix = f"volume={gain_db:.4f}dB,"
+    else:
+        prefix = ""
     measures = "Peak_level+Abs_Peak_count+Number_of_samples"
     chain = (
-        f"{gain}"
+        f"{prefix}"
         f"astats=measure_perchannel=none:measure_overall={measures},"
         f"aformat=sample_fmts=s32,"
         f"astats=measure_perchannel=none:measure_overall={measures}"
