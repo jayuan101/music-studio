@@ -537,17 +537,24 @@ class EditorPanel(QWidget):
             self.gain_warning.setStyleSheet(f"color: {theme.LOSSLESS};")
 
     def _measure_clipping(self) -> None:
-        if self._path is None:
-            return
-        gain_db = self.gain_slider.value() / 10.0
-        self.analyse_button.setEnabled(False)
+        """Measure the signal as it would actually be exported.
 
-        def work(context, target, gain):
+        Measuring a bare gain would be misleading: the limiter, the compressor,
+        loudness normalisation and even the EQ all change where the peaks land.
+        A +48 dB boost clips badly in raw mode and not at all with the limiter
+        engaged, so the number has to come from the real chain.
+        """
+        if self._path is None or self._info is None:
+            return
+        self.analyse_button.setEnabled(False)
+        filters = edit_module.build_filter_chain(self.build_spec(), self._info)
+
+        def work(context, target, chain):
             context.progress(None, "Analysing levels")
-            return probe.measure_clipping(target, gain)
+            return probe.measure_clipping(target, filters=chain)
 
         job = self.jobs.submit_func(
-            "Measuring clipping", work, self._path, gain_db, category="analysis"
+            "Measuring clipping", work, self._path, filters, category="analysis"
         )
         job.signals.finished.connect(self._on_clipping_measured)
 

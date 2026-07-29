@@ -104,6 +104,65 @@ def test_peak_tracks_gain_across_the_whole_range(tone_flac):
         assert report.clips == (base + gain > 0)
 
 
+def _measure_with(path, spec):
+    """Measure a file through a real edit chain, the way the editor does."""
+    from musicstudio.core import edit as edit_module
+
+    info = probe.probe(path)
+    return probe.measure_clipping(
+        path, filters=edit_module.build_filter_chain(spec, info)
+    )
+
+
+def test_limiter_mode_reports_no_clipping(tone_flac):
+    """Regression: the measurement applied a bare gain and ignored the mode, so
+    a limited boost was reported as clipping just as badly as a raw one."""
+    from musicstudio.core.edit import EditSpec, GainMode
+
+    report = _measure_with(
+        tone_flac,
+        EditSpec(gain_db=48, gain_mode=GainMode.LIMIT, limiter_ceiling_db=-0.3),
+    )
+    assert not report.clips
+    assert report.clipped_samples == 0
+    assert report.peak_dbfs == pytest.approx(-0.3, abs=0.2)
+
+
+def test_raw_mode_reports_heavy_clipping(tone_flac):
+    from musicstudio.core.edit import EditSpec, GainMode
+
+    report = _measure_with(tone_flac, EditSpec(gain_db=48, gain_mode=GainMode.RAW))
+    assert report.clips
+    assert report.clipped_samples > 0
+    assert report.peak_dbfs > 0
+
+
+def test_the_gain_modes_disagree(tone_flac):
+    """The assertion that would have caught the bug: whatever the numbers are,
+    limiting and not limiting cannot produce the same answer."""
+    from musicstudio.core.edit import EditSpec, GainMode
+
+    raw = _measure_with(tone_flac, EditSpec(gain_db=48, gain_mode=GainMode.RAW))
+    limited = _measure_with(tone_flac, EditSpec(gain_db=48, gain_mode=GainMode.LIMIT))
+    assert raw.clipped_samples != limited.clipped_samples
+    assert raw.peak_dbfs > limited.peak_dbfs
+
+
+def test_measurement_sees_effects_other_than_gain(tone_flac):
+    """Normalisation moves the peak, so the measurement must reflect it."""
+    from musicstudio.core.edit import EditSpec
+
+    plain = probe.measure_clipping(tone_flac)
+    normalised = _measure_with(tone_flac, EditSpec(normalize=True))
+    assert normalised.peak_dbfs != pytest.approx(plain.peak_dbfs, abs=1.0)
+
+
+def test_bare_gain_still_works_without_a_chain(tone_flac):
+    """The simple call signature stays supported for non-editor callers."""
+    base = probe.measure_clipping(tone_flac).peak_dbfs
+    assert probe.measure_clipping(tone_flac, 6).peak_dbfs == pytest.approx(base + 6, abs=0.2)
+
+
 def test_astats_blocks_are_ordered_by_filter_index():
     stderr = (
         "[Parsed_astats_3 @ 0x1] Overall\n"
