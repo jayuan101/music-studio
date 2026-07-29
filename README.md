@@ -137,13 +137,12 @@ ffmpeg is bundled — there is nothing else to install.
 ### From source
 
 ```bash
-cd music-studio
 pip install -r requirements.txt
 python -m musicstudio
 ```
 
 You will need `ffmpeg` and `ffprobe` on your PATH, or placed in
-`music-studio/vendor/ffmpeg/`.
+`vendor/ffmpeg/`.
 
 ### Building the Windows executable
 
@@ -154,8 +153,8 @@ pyinstaller --noconfirm --clean MusicStudio.spec
 ```
 
 Output lands in `dist/MusicStudio/`. CI does this automatically — see
-`.github/workflows/build-music-studio.yml`, which runs on `music-v*` tags or on
-demand, and downloads ffmpeg itself.
+`.github/workflows/build.yml`, which runs on `v*` tags or on demand, and
+downloads ffmpeg itself.
 
 ---
 

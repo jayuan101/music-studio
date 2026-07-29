@@ -51,7 +51,7 @@ def _bundle_roots() -> Iterable[Path]:
         root = Path(meipass)
         yield root / "ffmpeg"
         yield root
-    # Running from source: music-studio/vendor/ffmpeg/
+    # Running from source: <repo root>/vendor/ffmpeg/
     pkg_root = Path(__file__).resolve().parent.parent.parent
     yield pkg_root / "vendor" / "ffmpeg"
     # Alongside a frozen executable.
