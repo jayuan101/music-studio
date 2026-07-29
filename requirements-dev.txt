@@ -1,5 +1,9 @@
 -r requirements.txt
 
 pytest>=8.0
-pytest-qt>=4.4
 pyinstaller>=6.0
+
+# pytest-qt is deliberately not here. Nothing uses qtbot -- the core engine has
+# no Qt dependency and is tested headlessly -- but the plugin imports PySide6
+# at collection time, which fails on a bare Linux CI runner before a single
+# test runs.
