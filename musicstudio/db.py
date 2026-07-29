@@ -115,6 +115,102 @@ class TrackRow:
         return f"{self.artwork_width}px" if self.artwork_width else "yes"
 
 
+#: Columns query_tracks() is allowed to sort by. SQL cannot parameterize a
+#: column name, so this allowlist is what stands between a tool-supplied
+#: sort field and a syntax error (or worse) -- never interpolate order_by
+#: without checking it against this set first.
+_SORTABLE_COLUMNS = frozenset(
+    {
+        "title", "artist", "album", "albumartist", "date", "genre",
+        "duration", "sample_rate", "bit_depth", "bitrate", "size_bytes",
+        "added_at", "path",
+    }
+)
+
+
+@dataclass
+class TrackFilter:
+    """A structured library query.
+
+    ``Library.search()`` is one ``LIKE`` string match, which cannot answer the
+    kind of question a natural-language assistant gets asked -- "which tracks
+    are lossy", "under 192kbps", "missing artwork", "everything under this
+    folder". Every field here is optional; unset fields are not filtered on.
+    All values are bound as SQL parameters, never interpolated -- a tool
+    argument from a model is untrusted input in exactly the sense any other
+    user input is.
+    """
+
+    is_lossless: bool | None = None
+    codec: str | None = None
+    min_bitrate: int | None = None
+    max_bitrate: int | None = None
+    min_sample_rate: int | None = None
+    has_artwork: bool | None = None
+    artist_contains: str | None = None
+    album_contains: str | None = None
+    genre_contains: str | None = None
+    title_contains: str | None = None
+    #: Restrict to files under this path (as a prefix match on the resolved,
+    #: absolute path string).
+    path_prefix: str | None = None
+    #: One of _SORTABLE_COLUMNS, optionally prefixed with "-" for descending.
+    order_by: str = "albumartist"
+    limit: int | None = None
+
+    def to_sql(self) -> tuple[str, list]:
+        """Build a parameterized WHERE clause and ORDER BY, plus its bindings."""
+        clauses: list[str] = []
+        params: list = []
+
+        if self.is_lossless is not None:
+            clauses.append("is_lossless = ?")
+            params.append(int(self.is_lossless))
+        if self.codec:
+            clauses.append("codec = ?")
+            params.append(self.codec.lower())
+        if self.min_bitrate is not None:
+            clauses.append("bitrate >= ?")
+            params.append(self.min_bitrate)
+        if self.max_bitrate is not None:
+            clauses.append("bitrate <= ?")
+            params.append(self.max_bitrate)
+        if self.min_sample_rate is not None:
+            clauses.append("sample_rate >= ?")
+            params.append(self.min_sample_rate)
+        if self.has_artwork is not None:
+            clauses.append("has_artwork = ?")
+            params.append(int(self.has_artwork))
+        for field, column in (
+            ("artist_contains", "artist"),
+            ("album_contains", "album"),
+            ("genre_contains", "genre"),
+            ("title_contains", "title"),
+        ):
+            value = getattr(self, field)
+            if value:
+                clauses.append(f"{column} LIKE ?")
+                params.append(f"%{value}%")
+        if self.path_prefix:
+            clauses.append("path LIKE ?")
+            params.append(f"{self.path_prefix}%")
+
+        where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
+
+        order_field = self.order_by or "albumartist"
+        descending = order_field.startswith("-")
+        column = order_field[1:] if descending else order_field
+        if column not in _SORTABLE_COLUMNS:
+            raise ValueError(
+                f"Cannot sort by {column!r}. Available: {', '.join(sorted(_SORTABLE_COLUMNS))}"
+            )
+        order = f"ORDER BY {column} {'DESC' if descending else 'ASC'}"
+
+        limit = f"LIMIT {int(self.limit)}" if self.limit else ""
+
+        return f"{where} {order} {limit}".strip(), params
+
+
 class Library:
     """Thread-safe SQLite wrapper for the track index."""
 
@@ -256,6 +352,14 @@ class Library:
             """,
             (pattern,) * 6,
         ).fetchall()
+        return [self._row_to_track(r) for r in rows]
+
+    def query_tracks(self, filters: TrackFilter) -> list[TrackRow]:
+        """Structured query for callers that need more than a text search --
+        the assistant's ``search_library`` tool is the reason this exists."""
+        where_order_limit, params = filters.to_sql()
+        conn = self._connect()
+        rows = conn.execute(f"SELECT * FROM tracks {where_order_limit}", params).fetchall()
         return [self._row_to_track(r) for r in rows]
 
     def get(self, path: Path) -> TrackRow | None:

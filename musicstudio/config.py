@@ -97,6 +97,25 @@ class Settings:
     theme: str = "dark"
     library_paths: list[str] = field(default_factory=list)
 
+    # -- Personal AI ------------------------------------------------------
+    #: Local model backend. Ollama runs as a separate process the user
+    #: installs themselves -- never pip-installed or bundled, just an HTTP
+    #: endpoint the assistant talks to.
+    ai_ollama_host: str = "http://localhost:11434"
+    #: Model name as shown by `ollama list`, e.g. "llama3.1". Empty until the
+    #: user picks one in Preferences.
+    ai_ollama_model: str = ""
+    #: Escalate to the Claude API for commands the local model struggles
+    #: with. Off by default: the local path needs no network and no key.
+    ai_use_claude: bool = False
+    ai_claude_model: str = "claude-sonnet-5"
+    #: Fallback storage for the API key when core.secrets can't use the OS
+    #: credential store (e.g. no `keyring` backend available). Plain text in
+    #: settings.json when used this way -- core.secrets is what decides
+    #: whether this field or the OS store is authoritative; never read this
+    #: directly, go through core.secrets.get_claude_api_key().
+    ai_claude_api_key: str = ""
+
     # ------------------------------------------------------------------
     def to_dict(self) -> dict[str, Any]:
         return {k: getattr(self, k) for k in self.__dataclass_fields__}

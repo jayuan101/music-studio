@@ -11,5 +11,13 @@ PySide6-Essentials>=6.7        # desktop UI toolkit
 PySide6-Addons>=6.7            # QtMultimedia: playback
 mutagen>=1.47                  # metadata read/write for every audio container
 yt-dlp>=2025.1.1               # URL / YouTube audio download
-httpx>=0.27                    # cover-art HTTP client
+httpx>=0.27                    # cover-art HTTP client, also used to talk to Ollama
 platformdirs>=4.0              # per-OS config/cache/data locations
+
+# Personal AI assistant. Ollama itself is NOT a dependency -- it is a
+# separate service the user installs and runs themselves, reached over HTTP.
+# Bundling a tool-calling-capable model's weights (4-20GB) directly into this
+# app is not practical.
+anthropic>=0.40                # Claude API, used only when the user turns on cloud escalation
+keyring>=25.0                  # OS credential store for the Claude API key; falls back to
+                                # settings.json with a visible warning if no backend is available

@@ -26,7 +26,9 @@ from PySide6.QtWidgets import (
 
 from ..config import get_settings
 from ..core import artwork as artwork_module
+from ..core import assistant as assistant_module
 from ..core import organise
+from ..core import secrets
 from . import theme
 from .common import card, heading, row, section_label, spacer
 
@@ -37,8 +39,9 @@ class SettingsPanel(QWidget):
     #: Emitted after any change is saved, so panels can pick up new defaults.
     settings_changed = Signal()
 
-    def __init__(self, parent=None) -> None:
+    def __init__(self, job_queue, parent=None) -> None:
         super().__init__(parent)
+        self.jobs = job_queue
         self.settings = get_settings()
         #: Suppresses saving while the form is being populated.
         self._loading = True
@@ -69,6 +72,7 @@ class SettingsPanel(QWidget):
         layout.addWidget(self._build_artwork_card())
         layout.addWidget(self._build_editor_card())
         layout.addWidget(self._build_download_card())
+        layout.addWidget(self._build_ai_card())
         layout.addStretch(1)
 
         scroll = QScrollArea()
@@ -253,6 +257,80 @@ class SettingsPanel(QWidget):
 
         return card(section_label("Downloads"), form, self.download_thumbnail)
 
+    def _build_ai_card(self) -> QWidget:
+        self.ai_ollama_host = QLineEdit()
+        self.ai_ollama_host.setPlaceholderText("http://localhost:11434")
+        self.ai_ollama_host.editingFinished.connect(self._save)
+
+        self.ai_ollama_model = QComboBox()
+        self.ai_ollama_model.setEditable(True)
+        self.ai_ollama_model.editTextChanged.connect(self._save)
+
+        refresh_models = QPushButton("Refresh models")
+        refresh_models.clicked.connect(self._refresh_ollama_models)
+
+        self.ai_ollama_status = QLabel(
+            "Ollama runs on your own machine -- nothing is sent anywhere for this path."
+        )
+        self.ai_ollama_status.setObjectName("Hint")
+        self.ai_ollama_status.setWordWrap(True)
+
+        self.ai_use_claude = QCheckBox("Use Claude for harder commands")
+        self.ai_use_claude.toggled.connect(self._on_ai_use_claude_toggled)
+
+        self.ai_claude_model = QComboBox()
+        self.ai_claude_model.addItem("Claude Sonnet 5 (recommended, lower cost)", "claude-sonnet-5")
+        self.ai_claude_model.addItem("Claude Opus 5 (more capable, higher cost)", "claude-opus-5")
+        self.ai_claude_model.currentIndexChanged.connect(self._save)
+
+        self.ai_claude_key = QLineEdit()
+        self.ai_claude_key.setEchoMode(QLineEdit.Password)
+        self.ai_claude_key.setPlaceholderText("sk-ant-…")
+        self.ai_claude_key.editingFinished.connect(self._save_claude_key)
+
+        test_connection = QPushButton("Test connection")
+        test_connection.clicked.connect(self._test_claude_connection)
+
+        self.ai_claude_status = QLabel("")
+        self.ai_claude_status.setObjectName("Hint")
+        self.ai_claude_status.setWordWrap(True)
+
+        self.ai_key_storage_note = QLabel("")
+        self.ai_key_storage_note.setObjectName("Hint")
+        self.ai_key_storage_note.setWordWrap(True)
+
+        billing_note = QLabel(
+            "Claude requests leave this machine over the network and are billed to your "
+            "own Anthropic account. The local model never sends anything anywhere."
+        )
+        billing_note.setObjectName("Hint")
+        billing_note.setWordWrap(True)
+
+        form = QWidget()
+        form_layout = QFormLayout(form)
+        form_layout.setContentsMargins(0, 0, 0, 0)
+        form_layout.setSpacing(8)
+        form_layout.addRow("Ollama host", row(self.ai_ollama_host, refresh_models, spacing=8))
+        form_layout.addRow("Model", self.ai_ollama_model)
+
+        claude_form = QWidget()
+        claude_layout = QFormLayout(claude_form)
+        claude_layout.setContentsMargins(0, 0, 0, 0)
+        claude_layout.setSpacing(8)
+        claude_layout.addRow("Claude model", self.ai_claude_model)
+        claude_layout.addRow("API key", row(self.ai_claude_key, test_connection, spacing=8))
+
+        return card(
+            section_label("Personal AI"),
+            form,
+            self.ai_ollama_status,
+            self.ai_use_claude,
+            claude_form,
+            self.ai_claude_status,
+            self.ai_key_storage_note,
+            billing_note,
+        )
+
     # -- load / save ----------------------------------------------------
     def _load(self) -> None:
         s = self.settings
@@ -282,7 +360,19 @@ class SettingsPanel(QWidget):
         self.download_thumbnail.setChecked(s.download_embed_thumbnail)
         self.playlist_limit.setValue(s.download_playlist_limit)
 
+        self.ai_ollama_host.setText(s.ai_ollama_host)
+        if s.ai_ollama_model:
+            self.ai_ollama_model.addItem(s.ai_ollama_model)
+            self.ai_ollama_model.setCurrentText(s.ai_ollama_model)
+        self.ai_use_claude.setChecked(s.ai_use_claude)
+        index = self.ai_claude_model.findData(s.ai_claude_model)
+        self.ai_claude_model.setCurrentIndex(max(0, index))
+        self.ai_claude_key.setText(secrets.get_claude_api_key(s))
+        self.ai_claude_model.setEnabled(s.ai_use_claude)
+        self.ai_claude_key.setEnabled(s.ai_use_claude)
+
         self._update_hints()
+        self._update_key_storage_note()
 
     def _save(self, *_) -> None:
         if self._loading:
@@ -312,6 +402,11 @@ class SettingsPanel(QWidget):
         s.download_mode = self.download_mode.currentData()
         s.download_embed_thumbnail = self.download_thumbnail.isChecked()
         s.download_playlist_limit = self.playlist_limit.value()
+
+        s.ai_ollama_host = self.ai_ollama_host.text().strip() or s.ai_ollama_host
+        s.ai_ollama_model = self.ai_ollama_model.currentText().strip()
+        s.ai_use_claude = self.ai_use_claude.isChecked()
+        s.ai_claude_model = self.ai_claude_model.currentData()
 
         try:
             s.save()
@@ -360,3 +455,95 @@ class SettingsPanel(QWidget):
         removed = artwork_module.clear_cache()
         self.status_label.setText(f"Cleared {removed} cached artwork entr{'y' if removed == 1 else 'ies'}")
         self.status_label.setStyleSheet(f"color: {theme.TEXT_FAINT};")
+
+    # -- Personal AI ------------------------------------------------------
+    def _on_ai_use_claude_toggled(self, checked: bool) -> None:
+        self.ai_claude_model.setEnabled(checked)
+        self.ai_claude_key.setEnabled(checked)
+        self._save()
+
+    def _refresh_ollama_models(self) -> None:
+        host = self.ai_ollama_host.text().strip() or "http://localhost:11434"
+        self.ai_ollama_status.setText("Checking…")
+        self.ai_ollama_status.setStyleSheet(f"color: {theme.TEXT_DIM};")
+
+        def work(context):
+            return assistant_module.OllamaBackend(host, "").list_models()
+
+        job = self.jobs.submit_func("Checking Ollama models", work, category="assistant")
+        job.signals.finished.connect(self._on_ollama_models)
+
+    def _on_ollama_models(self, _job_id: str, state: str, payload) -> None:
+        if state != "succeeded":
+            self.ai_ollama_status.setText(f"Could not reach Ollama: {payload}")
+            self.ai_ollama_status.setStyleSheet(f"color: {theme.WARNING};")
+            return
+
+        models = payload
+        current = self.ai_ollama_model.currentText()
+        self.ai_ollama_model.clear()
+        self.ai_ollama_model.addItems(models)
+        index = self.ai_ollama_model.findText(current)
+        if index >= 0:
+            self.ai_ollama_model.setCurrentIndex(index)
+        elif current:
+            self.ai_ollama_model.setEditText(current)
+
+        if models:
+            self.ai_ollama_status.setText(f"Found {len(models)} model(s).")
+        else:
+            self.ai_ollama_status.setText(
+                "Reachable, but no models are pulled yet -- try `ollama pull llama3.1`."
+            )
+        self.ai_ollama_status.setStyleSheet(f"color: {theme.TEXT_FAINT};")
+
+    def _save_claude_key(self) -> None:
+        if self._loading:
+            return
+        stored_in_keyring = secrets.set_claude_api_key(self.settings, self.ai_claude_key.text().strip())
+        self._update_key_storage_note(stored_in_keyring)
+        self.status_label.setText("Saved")
+        self.status_label.setStyleSheet(f"color: {theme.TEXT_FAINT};")
+        self.settings_changed.emit()
+
+    def _update_key_storage_note(self, stored_in_keyring: bool | None = None) -> None:
+        if stored_in_keyring is None:
+            stored_in_keyring = secrets.keyring_available()
+        self.ai_key_storage_note.setText(
+            "The key is stored in your OS credential store."
+            if stored_in_keyring
+            else "⚠ No OS credential store is available -- the key is saved in plain text "
+            "in settings.json."
+        )
+        self.ai_key_storage_note.setStyleSheet(
+            f"color: {theme.TEXT_FAINT if stored_in_keyring else theme.WARNING};"
+        )
+
+    def _test_claude_connection(self) -> None:
+        api_key = secrets.get_claude_api_key(self.settings)
+        if not api_key:
+            self.ai_claude_status.setText("Enter an API key first.")
+            self.ai_claude_status.setStyleSheet(f"color: {theme.WARNING};")
+            return
+
+        model = self.ai_claude_model.currentData()
+        self.ai_claude_status.setText("Checking…")
+        self.ai_claude_status.setStyleSheet(f"color: {theme.TEXT_DIM};")
+
+        def work(context):
+            import anthropic
+
+            client = anthropic.Anthropic(api_key=api_key)
+            client.messages.create(model=model, max_tokens=1, messages=[{"role": "user", "content": "hi"}])
+            return True
+
+        job = self.jobs.submit_func("Testing Claude connection", work, category="assistant")
+        job.signals.finished.connect(self._on_claude_tested)
+
+    def _on_claude_tested(self, _job_id: str, state: str, payload) -> None:
+        if state == "succeeded":
+            self.ai_claude_status.setText("Connected.")
+            self.ai_claude_status.setStyleSheet(f"color: {theme.LOSSLESS};")
+        else:
+            self.ai_claude_status.setText(f"Could not connect: {payload}")
+            self.ai_claude_status.setStyleSheet(f"color: {theme.WARNING};")
