@@ -33,7 +33,13 @@ a = Analysis(
     ["run_musicstudio.py"],
     pathex=[str(PROJECT_ROOT)],
     binaries=binaries,
-    datas=[],
+    datas=(
+        # The window icon is looked up at runtime, so it has to travel with
+        # the bundle -- the EXE's own icon is set separately, below.
+        [(str(PROJECT_ROOT / "assets" / "icon.ico"), "assets")]
+        if (PROJECT_ROOT / "assets" / "icon.ico").is_file()
+        else []
+    ),
     hiddenimports=[
         # yt-dlp loads its 1700+ extractors dynamically, so static analysis
         # misses them entirely and every download would fail with a bare
@@ -52,20 +58,36 @@ a = Analysis(
         "mutagen.oggtheora", "mutagen.oggvorbis", "mutagen.optimfrog",
         "mutagen.trueaudio", "mutagen.wave", "mutagen.wavpack",
         "httpx", "httpcore", "certifi",
+        # Playback. Qt loads its multimedia backend plugin at runtime, so
+        # static analysis alone would leave the app silent.
+        "PySide6.QtMultimedia",
     ],
     hookspath=[],
     hooksconfig={},
     runtime_hooks=[],
     excludes=[
-        # PySide6-Essentials still pulls in a lot we never touch. Dropping
-        # these keeps the download to a sane size.
+        # PySide6 pulls in a great deal we never touch -- and Addons, which we
+        # depend on only for QtMultimedia, is by far the largest part. Dropping
+        # the rest keeps the download to a sane size.
+        #
+        # NOTE: do NOT exclude PySide6.QtMultimedia. QtMultimediaWidgets is
+        # only the video-surface widget, which this app has no use for.
         "PySide6.QtWebEngineCore", "PySide6.QtWebEngineWidgets", "PySide6.QtWebEngineQuick",
+        "PySide6.QtWebView", "PySide6.QtWebChannel",
         "PySide6.Qt3DCore", "PySide6.Qt3DRender", "PySide6.Qt3DAnimation",
+        "PySide6.Qt3DExtras", "PySide6.Qt3DInput", "PySide6.Qt3DLogic",
         "PySide6.QtCharts", "PySide6.QtDataVisualization", "PySide6.QtQuick3D",
+        "PySide6.QtGraphs", "PySide6.QtGraphsWidgets",
         "PySide6.QtBluetooth", "PySide6.QtNfc", "PySide6.QtPositioning",
-        "PySide6.QtSensors", "PySide6.QtSerialPort", "PySide6.QtWebSockets",
-        "PySide6.QtQuick", "PySide6.QtQml", "PySide6.QtTest", "PySide6.QtDesigner",
+        "PySide6.QtLocation", "PySide6.QtSensors", "PySide6.QtSerialPort",
+        "PySide6.QtSerialBus", "PySide6.QtWebSockets", "PySide6.QtHttpServer",
+        "PySide6.QtQuick", "PySide6.QtQml", "PySide6.QtQuickControls2",
+        "PySide6.QtQuickWidgets", "PySide6.QtQuickTest",
+        "PySide6.QtTest", "PySide6.QtDesigner", "PySide6.QtUiTools",
         "PySide6.QtSql", "PySide6.QtHelp", "PySide6.QtMultimediaWidgets",
+        "PySide6.QtPdf", "PySide6.QtPdfWidgets", "PySide6.QtTextToSpeech",
+        "PySide6.QtRemoteObjects", "PySide6.QtScxml", "PySide6.QtStateMachine",
+        "PySide6.QtSpatialAudio", "PySide6.QtNetworkAuth", "PySide6.QtCanvasPainter",
         "tkinter", "matplotlib", "numpy", "scipy", "PIL", "pytest",
     ],
     win_no_prefer_redirects=False,

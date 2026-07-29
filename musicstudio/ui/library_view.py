@@ -19,6 +19,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from ..config import get_settings
 from ..db import Library, TrackRow, scan_into_library
 from . import theme
 from .common import format_size, heading, row, spacer
@@ -134,6 +135,12 @@ class LibraryPanel(QWidget):
         add_files.clicked.connect(self._choose_files)
         add_folder = QPushButton("Add folder…")
         add_folder.clicked.connect(self._choose_folder)
+        rescan = QPushButton("Rescan")
+        rescan.setToolTip("Re-index remembered folders and drop tracks whose files are gone")
+        rescan.clicked.connect(self.rescan_known_roots)
+        remove_missing = QPushButton("Remove missing")
+        remove_missing.setToolTip("Drop library entries whose files no longer exist")
+        remove_missing.clicked.connect(self.remove_missing)
 
         toolbar = QWidget()
         toolbar_layout = QHBoxLayout(toolbar)
@@ -142,6 +149,8 @@ class LibraryPanel(QWidget):
         toolbar_layout.addWidget(self.search_box, 1)
         toolbar_layout.addWidget(add_files)
         toolbar_layout.addWidget(add_folder)
+        toolbar_layout.addWidget(rescan)
+        toolbar_layout.addWidget(remove_missing)
         layout.addWidget(toolbar)
 
         # -- table ------------------------------------------------------
@@ -269,10 +278,12 @@ class LibraryPanel(QWidget):
         if directory:
             self.import_paths([Path(directory)])
 
-    def import_paths(self, paths: list[Path]) -> None:
+    def import_paths(self, paths: list[Path], *, remember: bool = True) -> None:
         """Index ``paths`` in the background, refreshing when done."""
         if not paths:
             return
+        if remember:
+            self._remember_roots(paths)
 
         def work(context, targets):
             return scan_into_library(self.library, targets, context=context)
@@ -281,6 +292,67 @@ class LibraryPanel(QWidget):
             f"Importing {len(paths)} item(s)", work, paths, category="import"
         )
         job.signals.finished.connect(lambda *_: self.refresh())
+
+    def _remember_roots(self, paths: list[Path]) -> None:
+        """Record imported folders so the library survives a restart.
+
+        Only directories are remembered. Keeping every individual file would
+        turn the settings file into a second, worse copy of the database.
+        """
+        settings = get_settings()
+        known = set(settings.library_paths)
+        for path in paths:
+            resolved = Path(path).resolve()
+            root = resolved if resolved.is_dir() else resolved.parent
+            known.add(str(root))
+        if set(settings.library_paths) != known:
+            settings.library_paths = sorted(known)
+            try:
+                settings.save()
+            except OSError:
+                # Failing to remember a folder is not worth interrupting an
+                # import that otherwise succeeded.
+                pass
+
+    def rescan_known_roots(self) -> None:
+        """Re-index every remembered folder, picking up outside changes."""
+        roots = [Path(p) for p in get_settings().library_paths if Path(p).is_dir()]
+        if not roots:
+            self.status_label.setText("No folders remembered yet — add one to get started")
+            return
+
+        def work(context, targets):
+            imported, skipped = scan_into_library(self.library, targets, context=context)
+            removed = self.library.prune_missing()
+            return imported, skipped, removed
+
+        job = self.jobs.submit_func(
+            f"Rescanning {len(roots)} folder(s)", work, roots, category="import"
+        )
+        job.signals.finished.connect(self._on_rescanned)
+
+    def _on_rescanned(self, _job_id: str, state: str, payload) -> None:
+        self.refresh()
+        if state == "succeeded" and payload:
+            imported, _skipped, removed = payload
+            parts = []
+            if imported:
+                parts.append(f"{imported} added or updated")
+            if removed:
+                parts.append(f"{removed} missing removed")
+            self.status_label.setText(
+                "Rescan: " + (", ".join(parts) if parts else "nothing changed")
+            )
+
+    def remove_missing(self) -> None:
+        """Drop rows whose files are no longer on disk."""
+        removed = self.library.prune_missing()
+        self.refresh()
+        self.status_label.setText(
+            f"Removed {removed} track(s) whose files are gone"
+            if removed
+            else "Every indexed file is still on disk"
+        )
 
     # -- drag and drop --------------------------------------------------
     def dragEnterEvent(self, event) -> None:

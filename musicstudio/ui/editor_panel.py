@@ -32,6 +32,7 @@ from ..core import formats, probe
 from ..core.edit import ChannelMode, EditSpec, EqBand, GainMode, Region, SilenceMode
 from . import theme
 from .common import QualityBadge, card, format_duration, heading, row, section_label, spacer
+from .widgets.player import Player, PreviewController
 from .widgets.waveform import WaveformView, compute_peaks
 
 
@@ -74,7 +75,30 @@ class EditorPanel(QWidget):
         # -- waveform ---------------------------------------------------
         self.waveform = WaveformView()
         self.waveform.selection_changed.connect(self._on_selection)
+        self.waveform.position_clicked.connect(self._on_waveform_clicked)
         layout.addWidget(self.waveform, 1)
+
+        # -- transport --------------------------------------------------
+        self.player = Player()
+        self.player.position_changed.connect(self.waveform.set_playhead)
+
+        self.preview = PreviewController(self.player, self.jobs, self)
+
+        self.play_selection_button = QPushButton("Play selection")
+        self.play_selection_button.setToolTip("Play only the highlighted region")
+        self.play_selection_button.clicked.connect(self._play_selection)
+
+        self.preview_button = QPushButton("Preview with effects")
+        self.preview_button.setToolTip(
+            "Render a short excerpt with the current effects applied and play it, "
+            "so you hear exactly what would be exported"
+        )
+        self.preview_button.clicked.connect(self._preview_effects)
+
+        layout.addWidget(
+            row(self.player, self.play_selection_button, self.preview_button, spacing=8)
+        )
+        layout.addWidget(self.player.status_label)
 
         self.selection_label = QLabel("No selection")
         self.selection_label.setObjectName("Hint")
@@ -361,6 +385,12 @@ class EditorPanel(QWidget):
             self.export_format.setCurrentIndex(max(0, index))
         self.export_button.setEnabled(self._info is not None)
 
+        # Any in-flight preview belongs to the previous file.
+        self.preview.cancel()
+        self.player.load(self._path)
+        self.player.set_status("")
+        self.preview.configure(self._path, self.build_spec)
+
         self.waveform.set_data(None, "Rendering waveform…")
 
         def work(context, target):
@@ -378,6 +408,45 @@ class EditorPanel(QWidget):
             return
         self.waveform.set_data(payload)
         self._update_summary()
+
+    # -- playback -------------------------------------------------------
+    def _on_waveform_clicked(self, seconds: float) -> None:
+        """A click on the waveform seeks there, as in any audio editor."""
+        self.player.seek(seconds)
+        self.waveform.set_playhead(seconds)
+
+    def _play_selection(self) -> None:
+        selection = self.waveform.selection()
+        if selection is None:
+            self.player.set_status("Drag across the waveform to select a region first")
+            return
+        self.player.play(start=selection[0], stop=selection[1])
+
+    def _preview_effects(self) -> None:
+        """Render and play a short excerpt with the effect stack applied."""
+        if self._path is None:
+            return
+        spec = self.build_spec()
+        if spec.is_empty:
+            # Nothing to apply, so play the original rather than spending a
+            # render on producing an identical copy.
+            self.player.load(self._path)
+            self.player.play()
+            self.player.set_status("No effects applied — playing the original")
+            return
+        # Preview from the selection if there is one, else from the playhead.
+        selection = self.waveform.selection()
+        start = selection[0] if selection else 0.0
+        self.preview.configure(self._path, self.build_spec)
+        self.preview.request(start)
+
+    def keyPressEvent(self, event) -> None:
+        # Space is the universal play/pause in audio tools.
+        if event.key() == Qt.Key_Space and self.player.isEnabled():
+            self.player.toggle()
+            event.accept()
+            return
+        super().keyPressEvent(event)
 
     # -- selection ------------------------------------------------------
     def _on_selection(self, start: float, end: float) -> None:

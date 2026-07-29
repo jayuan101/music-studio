@@ -47,8 +47,10 @@ class Settings:
 
     # -- Output ---------------------------------------------------------
     output_dir: str = str(DEFAULT_OUTPUT_DIR)
-    #: Filename pattern for converted/downloaded files.
-    filename_template: str = "{albumartist} - {album} - {track:02d} - {title}"
+    #: Filename pattern for converted/downloaded files. A "/" creates a
+    #: subfolder. Track and disc numbers are zero-padded automatically, so no
+    #: format spec is needed. See musicstudio.core.organise for the fields.
+    filename_template: str = "{albumartist}/{album}/{track} - {title}"
     #: Never silently replace a file the user already has.
     overwrite_existing: bool = False
 

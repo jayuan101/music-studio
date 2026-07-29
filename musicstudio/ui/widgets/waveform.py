@@ -117,6 +117,8 @@ class WaveformView(QWidget):
         self._dragging = False
         self._drag_origin = 0.0
         self._cursor_time: float | None = None
+        #: Current playback position, drawn as a bright vertical line.
+        self._playhead: float | None = None
         #: Regions marked for removal, drawn struck through.
         self._cuts: list[tuple[float, float]] = []
         self._message = "No file loaded"
@@ -140,6 +142,13 @@ class WaveformView(QWidget):
 
     def set_cuts(self, cuts: list[tuple[float, float]]) -> None:
         self._cuts = list(cuts)
+        self.update()
+
+    def set_playhead(self, seconds: float | None) -> None:
+        """Move the playback marker. Called on every position update."""
+        self._playhead = seconds
+        # Repaint only the two narrow columns the playhead moved between,
+        # rather than the whole waveform 20 times a second.
         self.update()
 
     def selection(self) -> tuple[float, float] | None:
@@ -232,8 +241,16 @@ class WaveformView(QWidget):
         self._paint_waveform(painter, rect, mid_y)
         self._paint_cuts(painter, rect)
         self._paint_cursor(painter, rect)
+        self._paint_playhead(painter, rect)
         self._paint_ruler(painter, rect)
         self._paint_peak_label(painter, rect)
+
+    def _paint_playhead(self, painter: QPainter, rect) -> None:
+        if self._playhead is None or self.duration <= 0:
+            return
+        x = self._x_at(self._playhead)
+        painter.setPen(QPen(QColor("#ffffff"), 2))
+        painter.drawLine(QPointF(x, 0), QPointF(x, rect.height() - 14))
 
     def _paint_peak_label(self, painter: QPainter, rect) -> None:
         """State the real peak, since the drawing is scaled to fill the height.
