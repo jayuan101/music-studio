@@ -5,6 +5,7 @@ from __future__ import annotations
 from pathlib import Path
 
 from PySide6.QtCore import QSize, Qt
+from PySide6.QtGui import QIcon
 from PySide6.QtWidgets import (
     QHBoxLayout,
     QLabel,
@@ -30,6 +31,7 @@ from .download_panel import DownloadPanel
 from .editor_panel import EditorPanel
 from .jobs_dock import JobsDock
 from .library_view import LibraryPanel
+from .settings_panel import SettingsPanel
 from .tag_panel import TagPanel
 
 #: (label, icon glyph) for each sidebar entry, in order.
@@ -38,8 +40,25 @@ PAGES = [
     ("Download", "⤓"),
     ("Convert", "⇄"),
     ("Edit", "∿"),
-    ("Tags & art", "⛭"),
+    ("Tags & art", "◧"),
+    ("Preferences", "⚙"),
 ]
+
+
+def _app_icon() -> QIcon | None:
+    """Locate the icon, whether running from source or from a frozen bundle."""
+    import sys
+
+    roots = []
+    meipass = getattr(sys, "_MEIPASS", None)
+    if meipass:
+        roots.append(Path(meipass) / "assets")
+    roots.append(Path(__file__).resolve().parent.parent.parent / "assets")
+    for root in roots:
+        candidate = root / "icon.ico"
+        if candidate.is_file():
+            return QIcon(str(candidate))
+    return None
 
 
 class MainWindow(QMainWindow):
@@ -51,6 +70,9 @@ class MainWindow(QMainWindow):
         self.jobs = JobQueue(max_concurrent=2)
 
         self.setWindowTitle(f"{APP_NAME} {__version__}")
+        icon = _app_icon()
+        if icon is not None:
+            self.setWindowIcon(icon)
         self.resize(1280, 820)
         self.setMinimumSize(QSize(1000, 680))
         self.setAcceptDrops(True)
@@ -58,6 +80,7 @@ class MainWindow(QMainWindow):
         self._build()
         self._connect_panels()
         self._check_ffmpeg()
+        self._restore_library()
 
     # -- construction ---------------------------------------------------
     def _build(self) -> None:
@@ -102,6 +125,7 @@ class MainWindow(QMainWindow):
         self.convert_panel = ConvertPanel(self.jobs)
         self.editor_panel = EditorPanel(self.jobs)
         self.tag_panel = TagPanel(self.jobs)
+        self.settings_panel = SettingsPanel()
 
         self.stack = QStackedWidget()
         for panel in (
@@ -110,6 +134,7 @@ class MainWindow(QMainWindow):
             self.convert_panel,
             self.editor_panel,
             self.tag_panel,
+            self.settings_panel,
         ):
             self.stack.addWidget(panel)
         layout.addWidget(self.stack, 1)
@@ -140,6 +165,9 @@ class MainWindow(QMainWindow):
         self.editor_panel.exported.connect(self._reindex)
         self.tag_panel.tags_saved.connect(self._reindex)
 
+        # A preference change should take effect immediately, not next launch.
+        self.settings_panel.settings_changed.connect(self._on_settings_changed)
+
     # -- navigation -----------------------------------------------------
     def _on_page_changed(self, index: int) -> None:
         self.stack.setCurrentIndex(index)
@@ -161,6 +189,16 @@ class MainWindow(QMainWindow):
     def _go_tags(self, paths: list[Path]) -> None:
         self.tag_panel.set_files(paths)
         self.go_to("Tags")
+
+    def _on_settings_changed(self) -> None:
+        """Push new defaults into the panels that display them."""
+        settings = self.settings
+        self.convert_panel.output_dir.setText(settings.output_dir)
+        self.download_panel.output_dir.setText(settings.output_dir)
+        # The gain slider's range is a preference, so re-apply it live.
+        self.editor_panel.gain_slider.setMaximum(int(settings.max_gain_db * 10))
+        self.editor_panel.ceiling_spin.setValue(settings.limiter_ceiling_db)
+        self.editor_panel.lufs_spin.setValue(settings.loudnorm_target_lufs)
 
     # -- actions --------------------------------------------------------
     def _update_artwork(self, paths: list[Path]) -> None:
@@ -204,6 +242,17 @@ class MainWindow(QMainWindow):
     def _update_status(self) -> None:
         active = self.jobs.active_count()
         self.status_message.setText(f"{active} job(s) running" if active else "Ready")
+
+    def _restore_library(self) -> None:
+        """Re-index remembered folders at startup.
+
+        The database already holds everything, so this is only to pick up
+        files added or removed outside the app since it last ran. It is
+        skipped when nothing is remembered yet.
+        """
+        if not self.settings.library_paths:
+            return
+        self.library_panel.rescan_known_roots()
 
     # -- environment ----------------------------------------------------
     def _check_ffmpeg(self) -> None:

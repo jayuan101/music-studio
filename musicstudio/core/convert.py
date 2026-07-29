@@ -19,6 +19,13 @@ from .formats import FormatProfile
 from .probe import AudioInfo
 
 
+#: CD quality. Used as the normalisation target when the user turns off
+#: "preserve source rate/depth" -- the sensible interpretation of not
+#: preserving is "bring everything down to a standard", not "do nothing".
+STANDARD_SAMPLE_RATE = 44100
+STANDARD_BIT_DEPTH = 16
+
+
 class Severity(str, Enum):
     INFO = "info"
     WARNING = "warning"
@@ -156,8 +163,27 @@ def resolve_output(
         )
 
     # -- Sample rate ----------------------------------------------------
-    source_rate = info.sample_rate or 44100
-    target_rate = sample_rate if sample_rate else (source_rate if preserve_rate else source_rate)
+    source_rate = info.sample_rate or STANDARD_SAMPLE_RATE
+    if sample_rate:
+        target_rate = sample_rate
+    elif preserve_rate:
+        target_rate = source_rate
+    else:
+        # "Don't preserve" means normalise down to CD standard -- the point of
+        # turning it off is shrinking a hi-res library for a phone or car.
+        # Never round *up*: upsampling adds bytes and no detail.
+        target_rate = min(source_rate, STANDARD_SAMPLE_RATE)
+        if target_rate < source_rate:
+            notes.append(
+                QualityNote(
+                    Severity.WARNING,
+                    "Sample rate normalised",
+                    f"Preferences are set to normalise rather than preserve, so "
+                    f"{source_rate / 1000:g} kHz is being resampled down to "
+                    f"{target_rate / 1000:g} kHz. Turn on 'keep source sample rate' "
+                    f"to leave it alone.",
+                )
+            )
 
     if profile.supported_sample_rates and target_rate not in profile.supported_sample_rates:
         adjusted = _nearest_supported_rate(target_rate, profile.supported_sample_rates)
@@ -195,8 +221,15 @@ def resolve_output(
     sample_fmt: str | None = None
     target_depth = 0
     if profile.lossless and profile.supported_bit_depths:
-        source_depth = info.bit_depth or 16
-        wanted = bit_depth if bit_depth else (source_depth if preserve_depth else source_depth)
+        source_depth = info.bit_depth or STANDARD_BIT_DEPTH
+        if bit_depth:
+            wanted = bit_depth
+        elif preserve_depth:
+            wanted = source_depth
+        else:
+            # Same reasoning as the sample rate: normalise down to 16-bit, but
+            # never pad a 16-bit source up to 24.
+            wanted = min(source_depth, STANDARD_BIT_DEPTH)
         # Pick the smallest supported depth that still holds every source bit.
         candidates = sorted(profile.supported_bit_depths)
         fitting = [d for d in candidates if d >= wanted]
@@ -446,15 +479,30 @@ def convert(
     *,
     context=None,
     info: AudioInfo | None = None,
-    preserve_rate: bool = True,
-    preserve_depth: bool = True,
+    preserve_rate: bool | None = None,
+    preserve_depth: bool | None = None,
 ) -> ConvertResult:
     """Run a conversion, reporting progress through ``context`` if given.
+
+    ``preserve_rate`` and ``preserve_depth`` default to the user's saved
+    preferences; pass them explicitly only to override.
 
     ``context`` is a :class:`~musicstudio.core.jobs.JobContext`; passing None
     runs synchronously with no progress reporting, which is what the tests do.
     """
     info = info or probe.probe(request.source)
+
+    # Fall back to the saved preferences rather than a hardcoded True, so the
+    # Preferences panel actually governs conversions.
+    if preserve_rate is None or preserve_depth is None:
+        from ..config import get_settings
+
+        settings = get_settings()
+        if preserve_rate is None:
+            preserve_rate = settings.preserve_source_rate
+        if preserve_depth is None:
+            preserve_depth = settings.preserve_source_depth
+
     # The edits and the encoder must agree on the final rate and channel count.
     # If the filter chain resamples to 44.1 kHz while '-ar' still says 48 kHz,
     # ffmpeg quietly resamples a second time -- and can hand the encoder a
@@ -531,6 +579,61 @@ def convert(
         source_info=info,
         result_info=probe.try_probe(destination),
     )
+
+
+def render_preview(
+    source: Path,
+    edits: EditSpec,
+    *,
+    start: float = 0.0,
+    seconds: float = 20.0,
+    context=None,
+) -> Path:
+    """Render a short excerpt with ``edits`` applied, for listening to.
+
+    The only honest way to preview a +18 dB boost or a loudness normalisation
+    is to actually apply it, so this runs the same filter chain the export
+    would. Output is uncompressed WAV into the cache directory: fastest to
+    encode, and the preview is thrown away rather than kept.
+
+    The excerpt is taken *after* the edits, so trims and cuts are respected --
+    the window is applied on top of whatever the spec already does.
+    """
+    from ..config import TEMP_DIR
+
+    TEMP_DIR.mkdir(parents=True, exist_ok=True)
+    # A stable name per source keeps the cache directory from filling up with
+    # one file per slider movement.
+    destination = TEMP_DIR / f"preview_{abs(hash(str(source))) % 10**8}.wav"
+
+    info = probe.probe(source)
+    output = resolve_output(info, formats.WAV, preserve_rate=True, preserve_depth=True)
+
+    request = ConvertRequest(
+        source=source,
+        destination=destination,
+        profile=formats.WAV,
+        edits=edits,
+        copy_metadata=False,
+        overwrite=True,
+    )
+    command = build_command(request, info, output)
+
+    # Insert the excerpt window just before the output path. -t after the
+    # filters trims the *result*, so it respects the edits rather than fighting
+    # them, and keeps the render short no matter how long the track is.
+    output_index = command.index(str(destination))
+    window = ["-t", f"{max(0.5, seconds):.3f}"]
+    if start > 0:
+        window = ["-ss", f"{start:.3f}", *window]
+    command[output_index:output_index] = window
+
+    ffmpeg.run_with_progress(
+        command,
+        total_seconds=seconds,
+        should_cancel=context.is_cancelled if context is not None else None,
+    )
+    return destination
 
 
 def suggest_destination(

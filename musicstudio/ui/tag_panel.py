@@ -24,6 +24,7 @@ from ..config import get_settings
 from ..core import artwork as artwork_module
 from ..core import tags as tags_module
 from . import theme
+from .widgets.art_picker import choose_artwork
 from .common import card, heading, row, section_label, spacer
 
 ART_PREVIEW_SIZE = 190
@@ -312,7 +313,9 @@ class TagPanel(QWidget):
 
         def work(context, a, b, t):
             context.progress(None, f"Searching for {b or t}")
-            return artwork_module.find_artwork(a, b, title=t, use_cache=False)
+            # Ask every provider so the user can compare, rather than silently
+            # taking whichever answered first.
+            return artwork_module.find_all_candidates(a, b, title=t)
 
         job = self.jobs.submit_func(
             "Cover art lookup", work, artist, tags.album, tags.title, category="artwork"
@@ -324,12 +327,18 @@ class TagPanel(QWidget):
         if state != "succeeded":
             self.art_label.setText(f"Lookup failed: {payload}")
             return
-        if payload is None:
+
+        candidates = payload or []
+        if not candidates:
             self.art_label.setText("No cover art found online")
             return
-        candidate: artwork_module.ArtworkCandidate = payload
-        self._set_artwork_bytes(candidate.data)
-        self.art_label.setText(f"{candidate.size_label} from {candidate.source}")
+
+        chosen = choose_artwork(candidates, self)
+        if chosen is None:
+            self.art_label.setText("Kept the existing artwork")
+            return
+        self._set_artwork_bytes(chosen.data)
+        self.art_label.setText(f"{chosen.size_label} from {chosen.source}")
 
     # -- saving ---------------------------------------------------------
     def _save(self) -> None:

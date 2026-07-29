@@ -4,6 +4,11 @@
 # time (see MusicStudio.spec) and resolved at runtime by musicstudio.core.ffmpeg.
 
 PySide6-Essentials>=6.7        # desktop UI toolkit
+# QtMultimedia lives in Addons, not Essentials. It is what plays audio, and on
+# Windows it uses Media Foundation, which is part of the OS -- no extra runtime
+# dependency. The PyInstaller spec excludes the rest of Addons so the bundle
+# only grows by the multimedia plugins.
+PySide6-Addons>=6.7            # QtMultimedia: playback
 mutagen>=1.47                  # metadata read/write for every audio container
 yt-dlp>=2025.1.1               # URL / YouTube audio download
 httpx>=0.27                    # cover-art HTTP client

@@ -3,6 +3,8 @@
 A Windows desktop app for getting music in, getting it right, and getting it
 out in whatever format you need — at the best quality the source allows.
 
+- **Play** anything in the library, with a waveform playhead and the ability to
+  hear your edits before you commit to them.
 - **Import** anything ffmpeg can decode (which is essentially everything).
 - **Download** from YouTube or any of the 1700+ sites yt-dlp supports.
 - **Convert** to FLAC, ALAC, WAV, AIFF, WavPack, MP3, AAC, Opus, Vorbis or WMA.
@@ -33,8 +35,9 @@ know what you are working with.
 
 ## Turning things up
 
-The gain slider runs to **+30 dB (about 3000%)**, for quiet recordings, faint
-voice memos and old rips. What happens past full scale is your choice:
+The gain slider runs to **+30 dB (about 3000%)** by default — raise the ceiling
+in Preferences if you need more — for quiet recordings, faint voice memos and
+old rips. What happens past full scale is your choice:
 
 - **Boost, then limit** *(default)* — a lookahead limiter catches peaks at a
   configurable true-peak ceiling (−0.3 dBTP by default). Genuinely loud, no
@@ -53,6 +56,19 @@ unlimited headroom and only the final encode quantises.
 
 ---
 
+## Listening before you commit
+
+The editor has a transport bar: play/pause (or the spacebar), stop, a scrubber,
+and a volume slider. Click anywhere on the waveform to seek there; select a
+region and **Play selection** plays just that span.
+
+**Preview with effects** is the one that matters. It renders a short excerpt
+with your whole effect stack applied — gain, limiter, normalisation, EQ, tempo,
+the lot — and plays that, so what you hear is what you would export. Renders
+are debounced, so dragging a slider does not queue up a hundred of them.
+
+---
+
 ## Cover art
 
 Artwork is looked up from two sources, neither needing an API key or signup:
@@ -61,6 +77,9 @@ Artwork is looked up from two sources, neither needing an API key or signup:
    the most accurate. Rate-limited to 1 request/second as their rules require.
 2. **iTunes Search API** — the fallback, and reliably high resolution: the
    100×100 thumbnail URL it returns is rewritten to fetch up to 1200×1200.
+
+When more than one provider answers, a picker shows each candidate with its
+source, resolution and match score rather than silently taking the first.
 
 **Update all artwork** scans your library, fills in what is missing, and
 optionally replaces embedded images below a resolution you set — which is what
@@ -84,6 +103,27 @@ you pick the format, rather than after the file is on disk.
 
 Playlists are supported, with an optional limit. Downloads flow straight into
 the tagging and artwork pipeline.
+
+---
+
+## Preferences
+
+Everything has a default you can change, and changes save immediately:
+output folder, filename template, whether to preserve source rate and depth,
+artwork providers and minimum resolution, the limiter ceiling, how far the gain
+slider reaches, and the default download mode.
+
+Turning *off* "keep the source sample rate / bit depth" normalises everything
+down to CD quality (44.1 kHz / 16-bit) — useful for shrinking a hi-res library
+for a phone or car. Nothing is ever upsampled.
+
+### Organising files
+
+`filename_template` builds output names from tags, and a `/` creates
+subfolders — the default is `{albumartist}/{album}/{track} - {title}`.
+Track and disc numbers are zero-padded automatically. Available fields are
+listed in Preferences. This only ever applies to files the app *writes*; it
+never reorganises music already on your disk.
 
 ---
 
@@ -125,10 +165,11 @@ demand, and downloads ffmpeg itself.
 python -m pytest tests -q
 ```
 
-206 tests covering the filter-graph builder, the quality policy, real encodes
+251 tests covering the filter-graph builder, the quality policy, real encodes
 into all ten output formats, tag round-trips through every container, the
-artwork provider chain (against mocked HTTP) and the library index. Tests that
-need audio generate it with ffmpeg rather than committing binary fixtures.
+artwork provider chain (against mocked HTTP), filename templating and path
+safety, settings persistence, and the library index. Tests that need audio
+generate it with ffmpeg rather than committing binary fixtures.
 
 ---
 
@@ -145,9 +186,10 @@ musicstudio/
 │   ├── tags.py       one TagSet over ID3 / Vorbis / MP4 / APEv2 / ASF
 │   ├── artwork.py    MusicBrainz, Cover Art Archive, iTunes
 │   ├── download.py   yt-dlp wrapper
+│   ├── organise.py   filename templating, with Windows path safety
 │   └── jobs.py       background queue with progress and cancel
 ├── db.py             SQLite library index
-└── ui/               PySide6 panels, waveform widget, activity dock
+└── ui/               PySide6 panels, waveform, player, activity dock
 ```
 
 `core/` has no dependency on Qt, so the whole engine is testable headlessly.
@@ -158,6 +200,9 @@ musicstudio/
 
 - **Licence:** mutagen is GPL-2.0-or-later and the bundled ffmpeg is a GPL
   build, so the distributed application is effectively GPL.
+- **Download size.** The Windows build bundles both a full ffmpeg and Qt's
+  multimedia stack, so it is a few hundred megabytes. That is the cost of an
+  app that works the moment you unzip it, with nothing else to install.
 - **Downloading from YouTube** conflicts with its Terms of Service. Sensible for
   your own content or content you hold rights to.
 - **No tool can make a lossy file lossless.** Where that matters, the app says
