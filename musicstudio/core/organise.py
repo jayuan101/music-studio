@@ -142,6 +142,106 @@ def render_path(
     return destination
 
 
+# ---------------------------------------------------------------------------
+# The inverse direction: pulling tags out of a filename
+# ---------------------------------------------------------------------------
+
+#: Fields worth constraining to digits when parsing -- keeps a numeric field
+#: from swallowing part of an adjacent free-text field like the title.
+_NUMERIC_FIELDS = frozenset({"track", "disc", "year"})
+
+_PLACEHOLDER = re.compile(r"\{(\w+)(?::[^}]*)?\}")
+
+
+def _pattern_to_regex(pattern_part: str) -> tuple[re.Pattern[str], list[str]]:
+    """Turn one path component of a template into a matching regex.
+
+    Literal text is escaped and kept as-is; each ``{field}`` becomes a named
+    capture group. Two adjacent placeholders with nothing separating them are
+    inherently ambiguous to invert and are not specially handled -- the same
+    limitation ``render_template`` accepts in the forward direction.
+    """
+    parts: list[str] = []
+    names: list[str] = []
+    last_end = 0
+    for match in _PLACEHOLDER.finditer(pattern_part):
+        parts.append(re.escape(pattern_part[last_end : match.start()]))
+        name = match.group(1).lower()
+        if name in TEMPLATE_FIELDS:
+            names.append(name)
+            body = r"\d+" if name in _NUMERIC_FIELDS else ".+?"
+            parts.append(f"(?P<{name}>{body})")
+        else:
+            parts.append(".*?")
+        last_end = match.end()
+    parts.append(re.escape(pattern_part[last_end:]))
+    return re.compile("^" + "".join(parts) + "$"), names
+
+
+def _match_component(subject: str, pattern_part: str) -> dict[str, str]:
+    regex, names = _pattern_to_regex(pattern_part)
+    match = regex.match(subject)
+    if not match:
+        return {}
+    return {name: match.group(name).strip() for name in names if match.group(name)}
+
+
+def _captures_to_tagset(captured: dict[str, str]) -> TagSet:
+    tags = TagSet()
+    for field in ("title", "artist", "albumartist", "album", "genre", "composer"):
+        if captured.get(field):
+            setattr(tags, field, captured[field])
+    if captured.get("year"):
+        tags.date = captured["year"]
+    elif captured.get("date"):
+        tags.date = captured["date"]
+    for field, attr in (("track", "track_number"), ("disc", "disc_number")):
+        if captured.get(field):
+            try:
+                setattr(tags, attr, int(captured[field]))
+            except ValueError:
+                pass
+    return tags
+
+
+def parse_filename_tags(path: str | Path, pattern: str = "{artist} - {title}") -> TagSet:
+    """Extract tags from a filename or path, the inverse of ``render_template``.
+
+    Uses the same ``{field}`` vocabulary and the same ``/`` folder-splitting
+    convention, so a pattern like ``"{albumartist}/{album}/{track} - {title}"``
+    can pull tags out of a path like
+    ``"The Rearview/Neon Cartography/03 - Midnight Drive.flac"``.
+
+    Never raises: a filename that does not match the pattern is a normal
+    outcome for a "try to tag this from the name" request, not an error, and
+    yields an empty ``TagSet`` rather than a partial or wrong guess.
+    """
+    path = Path(path)
+    pattern_parts = pattern.split("/")
+
+    parts = list(path.parts)
+    if not parts:
+        return TagSet()
+    parts[-1] = path.stem  # the file's own real extension, safe to strip here
+
+    depth = len(pattern_parts)
+    subject_parts = parts[-depth:] if depth <= len(parts) else parts
+
+    if len(subject_parts) != len(pattern_parts):
+        # Not enough path depth for a multi-level pattern (a bare filename
+        # against an "{albumartist}/{album}/{title}"-shaped pattern, say) --
+        # fall back to matching just the filename against the last segment
+        # rather than failing outright.
+        pattern_parts = pattern_parts[-1:]
+        subject_parts = subject_parts[-1:]
+
+    captured: dict[str, str] = {}
+    for subject, pattern_part in zip(subject_parts, pattern_parts):
+        captured.update(_match_component(subject, pattern_part))
+
+    return _captures_to_tagset(captured)
+
+
 def preview_template(template: str, root: Path | None = None) -> str:
     """Render a template against a sample track, for the Preferences panel."""
     sample = TagSet(

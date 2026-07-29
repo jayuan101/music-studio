@@ -61,6 +61,14 @@ a = Analysis(
         # Playback. Qt loads its multimedia backend plugin at runtime, so
         # static analysis alone would leave the app silent.
         "PySide6.QtMultimedia",
+        # Personal AI assistant. anthropic is imported lazily by
+        # core/assistant.py's ClaudeBackend, only when the user turns on
+        # cloud escalation -- but it still has to be discoverable by
+        # PyInstaller's static analysis to be bundled at all.
+        "anthropic",
+        # keyring picks its backend at runtime based on the OS; on Windows
+        # that is the Credential Locker backend specifically.
+        "keyring.backends.Windows",
     ],
     hookspath=[],
     hooksconfig={},

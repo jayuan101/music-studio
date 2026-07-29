@@ -26,6 +26,7 @@ from ..core import ffmpeg
 from ..core.jobs import JobQueue
 from ..db import Library
 from . import theme
+from .assistant_panel import AssistantPanel
 from .convert_panel import ConvertPanel
 from .download_panel import DownloadPanel
 from .editor_panel import EditorPanel
@@ -41,6 +42,7 @@ PAGES = [
     ("Convert", "⇄"),
     ("Edit", "∿"),
     ("Tags & art", "◧"),
+    ("Assistant", "✦"),
     ("Preferences", "⚙"),
 ]
 
@@ -125,7 +127,8 @@ class MainWindow(QMainWindow):
         self.convert_panel = ConvertPanel(self.jobs)
         self.editor_panel = EditorPanel(self.jobs)
         self.tag_panel = TagPanel(self.jobs)
-        self.settings_panel = SettingsPanel()
+        self.assistant_panel = AssistantPanel(self.jobs, self.library)
+        self.settings_panel = SettingsPanel(self.jobs)
 
         self.stack = QStackedWidget()
         for panel in (
@@ -134,6 +137,7 @@ class MainWindow(QMainWindow):
             self.convert_panel,
             self.editor_panel,
             self.tag_panel,
+            self.assistant_panel,
             self.settings_panel,
         ):
             self.stack.addWidget(panel)
@@ -164,6 +168,7 @@ class MainWindow(QMainWindow):
         self.convert_panel.converted.connect(self._reindex)
         self.editor_panel.exported.connect(self._reindex)
         self.tag_panel.tags_saved.connect(self._reindex)
+        self.assistant_panel.files_changed.connect(self._reindex)
 
         # A preference change should take effect immediately, not next launch.
         self.settings_panel.settings_changed.connect(self._on_settings_changed)
@@ -199,6 +204,9 @@ class MainWindow(QMainWindow):
         self.editor_panel.gain_slider.setMaximum(int(settings.max_gain_db * 10))
         self.editor_panel.ceiling_spin.setValue(settings.limiter_ceiling_db)
         self.editor_panel.lufs_spin.setValue(settings.loudnorm_target_lufs)
+        # A backend/model/toggle change must take effect on the next command,
+        # not require reopening the app.
+        self.assistant_panel.refresh_settings()
 
     # -- actions --------------------------------------------------------
     def _update_artwork(self, paths: list[Path]) -> None:
