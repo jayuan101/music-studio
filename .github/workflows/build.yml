@@ -131,6 +131,27 @@ jobs:
           $size = (Get-ChildItem dist/MusicStudio -Recurse | Measure-Object -Property Length -Sum).Sum / 1MB
           Write-Host ("Bundle size: {0:N1} MB" -f $size)
 
+      - name: Verify Personal AI dependencies import when frozen
+        # anthropic and keyring.backends.Windows are PyInstaller hiddenimports
+        # (see MusicStudio.spec) precisely because static analysis can't find
+        # them on its own -- that makes them the most likely thing to quietly
+        # stop resolving in a future PyInstaller/dependency bump. Building
+        # scripts/verify_frozen_ai_imports.py into its own tiny executable and
+        # running it here proves the import actually works once frozen,
+        # rather than just trusting the hiddenimports list.
+        shell: pwsh
+        run: |
+          pyinstaller --noconfirm --onefile --paths . `
+            --hidden-import anthropic --hidden-import keyring.backends.Windows `
+            --distpath dist-ai-check --workpath build-ai-check --specpath build-ai-check `
+            scripts/verify_frozen_ai_imports.py
+
+          $output = & dist-ai-check/verify_frozen_ai_imports.exe | Out-String
+          Write-Host $output
+          if ($output -notmatch "FROZEN_AI_IMPORTS_OK") {
+            throw "Personal AI dependencies (anthropic/keyring) did not import correctly from a frozen bundle"
+          }
+
       - name: Determine version
         id: version
         shell: pwsh

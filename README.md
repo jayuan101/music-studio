@@ -12,6 +12,10 @@ out in whatever format you need — at the best quality the source allows.
   fade, change speed and pitch, equalise, strip silence, remap channels.
 - **Tag** every field, across every container, with cover art fetched
   automatically from MusicBrainz and iTunes.
+- **Ask** — a Personal AI assistant that can search, convert, edit, tag, or
+  download for you in plain language. Runs on a local Ollama model with no
+  network or API key by default; a Preferences toggle escalates specific
+  commands to Claude when you want the extra capability.
 
 ---
 
