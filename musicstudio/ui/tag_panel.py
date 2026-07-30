@@ -22,6 +22,7 @@ from PySide6.QtWidgets import (
 
 from ..config import get_settings
 from ..core import artwork as artwork_module
+from ..core import tag_fix as tag_fix_module
 from ..core import tags as tags_module
 from . import theme
 from .widgets.art_picker import choose_artwork
@@ -57,7 +58,7 @@ class ArtworkView(QLabel):
             return
         self.setPixmap(
             pixmap.scaled(
-                ART_PREVIEW_SIZE, ART_PREVIEW_SIZE, Qt.KeepAspectRatio, Qt.SmoothTransformation
+                self.width(), self.height(), Qt.KeepAspectRatio, Qt.SmoothTransformation
             )
         )
         self.setText("")
@@ -199,8 +200,20 @@ class TagPanel(QWidget):
         self.save_all_button.clicked.connect(self._save_all)
         self.save_all_button.setEnabled(False)
 
+        self.fix_button = QPushButton("Fix metadata")
+        self.fix_button.setToolTip(
+            "Fill in missing fields from the filename and an online lookup. "
+            "Never overwrites a field that already has a value."
+        )
+        self.fix_button.clicked.connect(self._fix_metadata)
+        self.fix_button.setEnabled(False)
+
         layout.addWidget(
-            row(self.status_label, spacer(), self.save_all_button, self.save_button, spacing=8)
+            row(
+                self.status_label, spacer(),
+                self.fix_button, self.save_all_button, self.save_button,
+                spacing=8,
+            )
         )
 
     # -- files ----------------------------------------------------------
@@ -215,6 +228,7 @@ class TagPanel(QWidget):
             self._clear_form()
         self.save_button.setEnabled(bool(self._paths))
         self.save_all_button.setEnabled(len(self._paths) > 1)
+        self.fix_button.setEnabled(bool(self._paths))
 
     def _choose_files(self) -> None:
         paths, _ = QFileDialog.getOpenFileNames(
@@ -242,6 +256,19 @@ class TagPanel(QWidget):
         self.art_view.clear_art()
         self.art_label.setText("—")
 
+    def _set_fields(self, tags: tags_module.TagSet) -> None:
+        """Push a TagSet's values into the form widgets, overwriting whatever
+        is currently shown -- used both for loading a file and for applying
+        a "Fix metadata" result."""
+        for key, widget in self.fields.items():
+            value = getattr(tags, key, None)
+            if isinstance(widget, QLineEdit):
+                widget.setText(str(value or ""))
+            elif isinstance(widget, QSpinBox):
+                widget.setValue(int(value) if value else 0)
+            elif isinstance(widget, QPlainTextEdit):
+                widget.setPlainText(str(value or ""))
+
     def _load_current(self, *_) -> None:
         path = self._current_path()
         if path is None:
@@ -249,14 +276,7 @@ class TagPanel(QWidget):
             return
 
         self._tags = tags_module.try_read(path)
-        for key, widget in self.fields.items():
-            value = getattr(self._tags, key, None)
-            if isinstance(widget, QLineEdit):
-                widget.setText(str(value or ""))
-            elif isinstance(widget, QSpinBox):
-                widget.setValue(int(value) if value else 0)
-            elif isinstance(widget, QPlainTextEdit):
-                widget.setPlainText(str(value or ""))
+        self._set_fields(self._tags)
 
         self._artwork = self._tags.artwork
         if self._artwork and self._artwork.data:
@@ -388,9 +408,67 @@ class TagPanel(QWidget):
     def _on_saved(self, _job_id: str, state: str, payload) -> None:
         self.save_button.setEnabled(bool(self._paths))
         self.save_all_button.setEnabled(len(self._paths) > 1)
+        self.fix_button.setEnabled(bool(self._paths))
         if state == "succeeded":
             self.status_label.setText(f"Saved {len(payload)} file(s)")
             self.tags_saved.emit(payload)
             self._load_current()
         else:
             self.status_label.setText(f"Could not save: {payload}")
+
+    # -- fix metadata -----------------------------------------------------
+    def _fix_metadata(self) -> None:
+        """Fill in missing fields from the filename and an online lookup.
+
+        A single loaded file is fixed in-place in the form, for the user to
+        review and Save; several loaded files (a multi-selection) are fixed
+        and written straight to disk as a background batch, the same way
+        "Apply to all selected" commits directly rather than editing a form
+        that can only show one file at a time.
+        """
+        if not self._paths:
+            return
+        self.fix_button.setEnabled(False)
+
+        if len(self._paths) == 1:
+            path = self._paths[0]
+            baseline = self._collect()
+            self.status_label.setText("Fixing metadata…")
+
+            def work(context):
+                context.progress(None, f"Fixing metadata for {path.name}")
+                return tag_fix_module.fix_file_tags(path, baseline=baseline)
+
+            job = self.jobs.submit_func("Fix metadata", work, category="tags")
+            job.signals.finished.connect(self._on_fix_single)
+        else:
+            paths = list(self._paths)
+            self.status_label.setText(f"Fixing metadata for {len(paths)} file(s)…")
+
+            def work(context):
+                return tag_fix_module.fix_library_tags(paths, context=context)
+
+            job = self.jobs.submit_func(
+                f"Fix metadata ({len(paths)})", work, category="tags"
+            )
+            job.signals.finished.connect(self._on_fix_batch)
+
+    def _on_fix_single(self, _job_id: str, state: str, payload) -> None:
+        self.fix_button.setEnabled(bool(self._paths))
+        if state != "succeeded":
+            self.status_label.setText(f"Could not fix metadata: {payload}")
+            return
+        self._tags = payload
+        self._set_fields(payload)
+        self.status_label.setText("Filled in missing fields — review, then Save tags")
+
+    def _on_fix_batch(self, _job_id: str, state: str, payload) -> None:
+        self.fix_button.setEnabled(bool(self._paths))
+        if state != "succeeded":
+            self.status_label.setText(f"Could not fix metadata: {payload}")
+            return
+        updated = [r.path for r in payload if r.updated]
+        self.status_label.setText(f"Fixed {len(updated)} of {len(payload)} file(s)")
+        if updated:
+            self.tags_saved.emit(updated)
+            self._load_current()

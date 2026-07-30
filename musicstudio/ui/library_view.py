@@ -5,7 +5,7 @@ from __future__ import annotations
 from pathlib import Path
 
 from PySide6.QtCore import QAbstractTableModel, QFileSystemWatcher, QModelIndex, QTimer, Qt, Signal
-from PySide6.QtGui import QColor
+from PySide6.QtGui import QColor, QPixmap
 from PySide6.QtWidgets import (
     QAbstractItemView,
     QFileDialog,
@@ -21,9 +21,37 @@ from PySide6.QtWidgets import (
 )
 
 from ..config import get_settings
+from ..core import tags as tags_module
 from ..db import Library, TrackRow, scan_into_library
 from . import theme
-from .common import format_size, heading, row, spacer
+from .common import card, format_size, heading, row, section_label, spacer
+from .tag_panel import ArtworkView
+
+#: Smaller than the Tags & art page's own artwork box -- this is a
+#: secondary, at-a-glance reference, not the primary editing view.
+LIBRARY_ART_PREVIEW_SIZE = 140
+
+
+class _LibraryArtworkPreview(ArtworkView):
+    """Read-only artwork preview for the Library page.
+
+    Same rendering as the Tags & art page's box, sized down, with the
+    drop-an-image affordance turned off since dropping here would not
+    actually do anything -- editing artwork stays on the Tags & art page.
+    """
+
+    def __init__(self, parent=None) -> None:
+        super().__init__(parent)
+        self.setFixedSize(LIBRARY_ART_PREVIEW_SIZE, LIBRARY_ART_PREVIEW_SIZE)
+        self.setAcceptDrops(False)
+
+    def clear_art(self) -> None:
+        self.setPixmap(QPixmap())
+        self.setText("No cover art")
+        self.setStyleSheet(
+            f"border: 1px dashed {theme.BORDER}; border-radius: 8px; "
+            f"color: {theme.TEXT_FAINT}; background: {theme.BG_DEEP};"
+        )
 
 
 class TrackTableModel(QAbstractTableModel):
@@ -125,11 +153,18 @@ class LibraryPanel(QWidget):
 
     #: Emitted with the paths the user selected.
     selection_changed = Signal(list)
+    #: Emitted on a plain row click (not on the Art column) -- the signal that
+    #: drives auto-navigating to Tags & art. Kept separate from
+    #: `selection_changed` so keyboard navigation and clicking the Art column
+    #: itself can update the in-Library artwork preview without being yanked
+    #: away to another page.
+    row_clicked = Signal(list)
     #: Emitted when the user asks to act on the selection.
     convert_requested = Signal(list)
     edit_requested = Signal(object)         # a single path
     tags_requested = Signal(list)
     artwork_requested = Signal(list)
+    tags_fix_requested = Signal(list)
 
     def __init__(self, library: Library, job_queue, parent=None) -> None:
         super().__init__(parent)
@@ -153,19 +188,36 @@ class LibraryPanel(QWidget):
 
         self.refresh()
 
+    #: Column index of "Art" in TrackTableModel.COLUMNS -- clicking it previews
+    #: artwork in place rather than jumping away to Tags & art.
+    ART_COLUMN = 8
+
     # -- construction ---------------------------------------------------
     def _build(self) -> None:
-        layout = QVBoxLayout(self)
-        layout.setContentsMargins(24, 20, 24, 20)
-        layout.setSpacing(14)
+        outer_layout = QVBoxLayout(self)
+        outer_layout.setContentsMargins(24, 20, 24, 20)
+        outer_layout.setSpacing(14)
 
-        layout.addWidget(
+        outer_layout.addWidget(
             heading(
                 "Library",
                 "Drag a folder anywhere onto this window to import it. "
                 "Files are indexed, never moved or modified.",
             )
         )
+
+        # Everything below lives in the left column; the artwork preview is
+        # a fixed-width panel alongside it, updated as the selection changes.
+        body = QHBoxLayout()
+        body.setContentsMargins(0, 0, 0, 0)
+        body.setSpacing(16)
+        outer_layout.addLayout(body, 1)
+
+        layout = QVBoxLayout()
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(14)
+        body.addLayout(layout, 1)
+        body.addWidget(self._build_artwork_preview())
 
         # -- toolbar ----------------------------------------------------
         self.search_box = QLineEdit()
@@ -208,6 +260,7 @@ class LibraryPanel(QWidget):
         self.table.verticalHeader().setDefaultSectionSize(30)
         self.table.setShowGrid(False)
         self.table.doubleClicked.connect(self._on_double_click)
+        self.table.clicked.connect(self._on_row_clicked)
         self.table.selectionModel().selectionChanged.connect(self._on_selection_changed)
 
         header = self.table.horizontalHeader()
@@ -242,6 +295,14 @@ class LibraryPanel(QWidget):
         self.artwork_button.clicked.connect(
             lambda: self.artwork_requested.emit(self.selected_paths() or self.all_paths())
         )
+        self.fix_tags_button = QPushButton("Fix metadata")
+        self.fix_tags_button.setToolTip(
+            "Fill in missing Title/Artist/Album/Year/Genre from the filename and an "
+            "online lookup. Never overwrites a field that already has a value."
+        )
+        self.fix_tags_button.clicked.connect(
+            lambda: self.tags_fix_requested.emit(self.selected_paths() or self.all_paths())
+        )
         self.delete_button = QPushButton("Delete…")
         self.delete_button.setObjectName("Danger")
         self.delete_button.clicked.connect(self._delete_selected)
@@ -254,6 +315,7 @@ class LibraryPanel(QWidget):
                 self.edit_button,
                 self.tags_button,
                 self.artwork_button,
+                self.fix_tags_button,
                 self.delete_button,
             )
         )
@@ -287,10 +349,58 @@ class LibraryPanel(QWidget):
     def all_paths(self) -> list[Path]:
         return [t.path for t in (self.model.track_at(r) for r in range(self.model.rowCount())) if t]
 
+    # -- artwork preview --------------------------------------------------
+    def _build_artwork_preview(self) -> QWidget:
+        self.preview_art = _LibraryArtworkPreview()
+        self.preview_label = QLabel("Select a track to preview its artwork")
+        self.preview_label.setObjectName("Hint")
+        self.preview_label.setWordWrap(True)
+        self.preview_label.setAlignment(Qt.AlignCenter)
+
+        content = QWidget()
+        content_layout = QVBoxLayout(content)
+        content_layout.setContentsMargins(0, 0, 0, 0)
+        content_layout.setSpacing(8)
+        content_layout.addWidget(section_label("Artwork"))
+        content_layout.addWidget(self.preview_art, 0, Qt.AlignHCenter)
+        content_layout.addWidget(self.preview_label)
+        content_layout.addStretch(1)
+
+        panel = card(content)
+        panel.setFixedWidth(LIBRARY_ART_PREVIEW_SIZE + 48)
+        return panel
+
+    def _refresh_artwork_preview(self, paths: list[Path]) -> None:
+        if not paths:
+            self.preview_art.clear_art()
+            self.preview_label.setText("Select a track to preview its artwork")
+            return
+        if len(paths) > 1:
+            self.preview_art.clear_art()
+            self.preview_label.setText(f"{len(paths)} tracks selected")
+            return
+
+        tags = tags_module.try_read(paths[0])
+        if tags.has_artwork():
+            self.preview_art.set_art(tags.artwork.data)
+            self.preview_label.setText(Path(paths[0]).name)
+        else:
+            self.preview_art.clear_art()
+            self.preview_label.setText(f"No artwork\n\n{Path(paths[0]).name}")
+
     # -- events ---------------------------------------------------------
     def _on_selection_changed(self, *_) -> None:
         self._update_actions()
-        self.selection_changed.emit(self.selected_paths())
+        paths = self.selected_paths()
+        self.selection_changed.emit(paths)
+        self._refresh_artwork_preview(paths)
+
+    def _on_row_clicked(self, index: QModelIndex) -> None:
+        if index.column() == self.ART_COLUMN:
+            return
+        paths = self.selected_paths()
+        if paths:
+            self.row_clicked.emit(paths)
 
     def _update_actions(self) -> None:
         selected = len(self.table.selectionModel().selectedRows()) if hasattr(self, "table") else 0
@@ -299,9 +409,13 @@ class LibraryPanel(QWidget):
         self.edit_button.setEnabled(selected == 1)
         self.tags_button.setEnabled(selected > 0)
         self.artwork_button.setEnabled(has_any)
+        self.fix_tags_button.setEnabled(has_any)
         self.delete_button.setEnabled(selected > 0)
         self.artwork_button.setText(
             f"Update artwork ({selected})" if selected else "Update all artwork"
+        )
+        self.fix_tags_button.setText(
+            f"Fix metadata ({selected})" if selected else "Fix all metadata"
         )
 
     def _on_double_click(self, index: QModelIndex) -> None:
