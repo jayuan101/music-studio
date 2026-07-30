@@ -38,6 +38,10 @@ class Player(QWidget):
     #: Emitted instead of playing directly, so the owner can decide whether
     #: to play the raw file or render the current edits first.
     play_requested = Signal()
+    #: The loaded media reached its end on its own -- distinct from a user
+    #: stop, so a queue can tell "finished" from "cancelled" and only
+    #: auto-advance on the former.
+    finished = Signal()
 
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
@@ -62,6 +66,7 @@ class Player(QWidget):
         self._player.durationChanged.connect(self._on_duration)
         self._player.playbackStateChanged.connect(self._on_state)
         self._player.errorOccurred.connect(self._on_error)
+        self._player.mediaStatusChanged.connect(self._on_media_status)
 
     # -- construction ---------------------------------------------------
     def _build(self) -> None:
@@ -225,6 +230,10 @@ class Player(QWidget):
             message or "Could not play this file — the system may lack a codec for it."
         )
         self.status_label.setStyleSheet(f"color: {theme.WARNING};")
+
+    def _on_media_status(self, status) -> None:
+        if status == QMediaPlayer.EndOfMedia:
+            self.finished.emit()
 
     def _on_scrubbed(self, milliseconds: int) -> None:
         if self._updating_slider:

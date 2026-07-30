@@ -6,12 +6,15 @@ from pathlib import Path
 
 from PySide6.QtCore import Qt, Signal
 from PySide6.QtWidgets import (
+    QAbstractItemView,
     QCheckBox,
     QComboBox,
     QFileDialog,
     QGridLayout,
     QLabel,
     QLineEdit,
+    QListWidget,
+    QListWidgetItem,
     QPlainTextEdit,
     QPushButton,
     QRadioButton,
@@ -32,6 +35,9 @@ class DownloadPanel(QWidget):
 
     #: Emitted with the paths of files that were downloaded.
     downloaded = Signal(list)
+    #: Emitted with one track just downloaded from a search result, so it can
+    #: be auto-played -- "download it and play it to see if I like it."
+    preview_ready = Signal(Path)
 
     def __init__(self, job_queue, parent=None) -> None:
         super().__init__(parent)
@@ -50,6 +56,49 @@ class DownloadPanel(QWidget):
                 "Download",
                 "Paste a link from YouTube or any of the 1700+ sites yt-dlp supports. "
                 "Playlists are downloaded in full.",
+            )
+        )
+
+        # -- Search -------------------------------------------------------
+        self.search_input = QLineEdit()
+        self.search_input.setPlaceholderText("Search YouTube for a song, artist or album…")
+        self.search_input.returnPressed.connect(self._search)
+
+        self.search_button = QPushButton("Search")
+        self.search_button.clicked.connect(self._search)
+
+        self.search_status = QLabel("")
+        self.search_status.setObjectName("Hint")
+
+        self.results_list = QListWidget()
+        self.results_list.setSelectionMode(QAbstractItemView.SingleSelection)
+        self.results_list.setMaximumHeight(190)
+        self.results_list.setVisible(False)
+        self.results_list.itemDoubleClicked.connect(self._preview_result)
+
+        self.preview_button = QPushButton("Download && play")
+        self.preview_button.setToolTip(
+            "Download the selected result and play it right away, so you can hear it "
+            "before deciding whether to keep it."
+        )
+        self.preview_button.clicked.connect(self._preview_selected)
+        self.preview_button.setEnabled(False)
+        self.results_list.itemSelectionChanged.connect(
+            lambda: self.preview_button.setEnabled(bool(self.results_list.selectedItems()))
+        )
+
+        self.results_hint = QLabel("")
+        self.results_hint.setObjectName("Hint")
+        self.results_hint.setWordWrap(True)
+        self.results_hint.setVisible(False)
+
+        layout.addWidget(
+            card(
+                section_label("Search"),
+                row(self.search_input, self.search_button, spacing=8),
+                self.search_status,
+                self.results_list,
+                row(self.results_hint, spacer(), self.preview_button, spacing=8),
             )
         )
 
@@ -166,6 +215,98 @@ class DownloadPanel(QWidget):
 
     def _append_log(self, text: str) -> None:
         self.log.appendPlainText(text)
+
+    # -- search -----------------------------------------------------------
+    def _search(self) -> None:
+        query = self.search_input.text().strip()
+        if not query:
+            return
+
+        self.search_button.setEnabled(False)
+        self.search_status.setText("Searching…")
+        self.search_status.setStyleSheet(f"color: {theme.TEXT_DIM};")
+        self.results_list.clear()
+        self.results_list.setVisible(False)
+        self.results_hint.setVisible(False)
+
+        def work(context, q):
+            return download_module.search(q)
+
+        job = self.jobs.submit_func(f"Searching “{query}”", work, query, category="download")
+        job.signals.finished.connect(self._on_searched)
+
+    def _on_searched(self, _job_id: str, state: str, payload) -> None:
+        self.search_button.setEnabled(True)
+        if state != "succeeded":
+            self.search_status.setText(f"Search failed: {payload}")
+            self.search_status.setStyleSheet(f"color: {theme.WARNING};")
+            return
+
+        results: list[download_module.SearchResult] = payload
+        if not results:
+            self.search_status.setText("No results.")
+            self.search_status.setStyleSheet(f"color: {theme.TEXT_DIM};")
+            return
+
+        self.search_status.setText(f"{len(results)} result(s) — double-click one to play it")
+        self.search_status.setStyleSheet(f"color: {theme.TEXT_DIM};")
+        for result in results:
+            detail = " · ".join(part for part in (result.uploader, result.duration_label) if part)
+            item = QListWidgetItem(f"{result.title}" + (f"  —  {detail}" if detail else ""))
+            item.setData(Qt.UserRole, result)
+            self.results_list.addItem(item)
+        self.results_list.setVisible(True)
+
+    def _preview_selected(self) -> None:
+        items = self.results_list.selectedItems()
+        if items:
+            self._preview_result(items[0])
+
+    def _preview_result(self, item: QListWidgetItem) -> None:
+        result: download_module.SearchResult = item.data(Qt.UserRole)
+        if result is None:
+            return
+
+        request = download_module.DownloadRequest(
+            url=result.url,
+            output_dir=Path(self.output_dir.text()),
+            mode="convert" if self.convert_radio.isChecked() else "keep",
+            profile=self._selected_profile() if self.convert_radio.isChecked() else None,
+            embed_thumbnail=self.thumbnail_check.isChecked(),
+            fetch_artwork=self.artwork_check.isChecked(),
+        )
+        self.preview_button.setEnabled(False)
+        self.results_hint.setVisible(True)
+        self.results_hint.setText(f"Downloading “{result.title}”…")
+        self._append_log(f"→ Preview: {result.title}")
+
+        def work(context, req):
+            return download_module.download(req, context=context)
+
+        job = self.jobs.submit_func(f"Downloading {result.title[:50]}", work, request, category="download")
+        job.signals.finished.connect(self._on_preview_downloaded)
+
+    def _on_preview_downloaded(self, _job_id: str, state: str, payload) -> None:
+        self.preview_button.setEnabled(bool(self.results_list.selectedItems()))
+        if state != "succeeded":
+            self.results_hint.setText(f"Download failed: {payload}")
+            self._append_log(f"Preview failed: {payload}")
+            return
+
+        result: download_module.DownloadResult = payload
+        for track in result.tracks:
+            self._append_log(f"✓ {track.path.name}")
+        for warning in result.warnings:
+            self._append_log(f"⚠ {warning}")
+
+        self.downloaded.emit([t.path for t in result.tracks])
+        if result.tracks:
+            self.results_hint.setText(
+                f"Playing “{result.tracks[0].path.stem}” — delete it from the Library if it's not what you wanted."
+            )
+            self.preview_ready.emit(result.tracks[0].path)
+        else:
+            self.results_hint.setText("Nothing came back from that download.")
 
     # -- inspect --------------------------------------------------------
     def _inspect(self) -> None:
