@@ -23,6 +23,7 @@ from .. import APP_NAME, __version__
 from ..config import ensure_dirs, get_settings
 from ..core import artwork as artwork_module
 from ..core import ffmpeg
+from ..core import tag_fix as tag_fix_module
 from ..core.jobs import JobQueue
 from ..db import Library
 from . import theme
@@ -162,6 +163,8 @@ class MainWindow(QMainWindow):
         self.library_panel.edit_requested.connect(self._go_edit)
         self.library_panel.tags_requested.connect(self._go_tags)
         self.library_panel.artwork_requested.connect(self._update_artwork)
+        self.library_panel.tags_fix_requested.connect(self._fix_library_tags)
+        self.library_panel.row_clicked.connect(self._go_tags_on_select)
 
         # Anything that produces or changes a file re-indexes it.
         self.download_panel.downloaded.connect(self._reindex)
@@ -194,6 +197,15 @@ class MainWindow(QMainWindow):
     def _go_tags(self, paths: list[Path]) -> None:
         self.tag_panel.set_files(paths)
         self.go_to("Tags")
+
+    def _go_tags_on_select(self, paths: list[Path]) -> None:
+        """Jump to Tags & art on a plain row click (or Ctrl/Shift-click), so
+        clicking songs flows straight into editing their metadata without an
+        extra button press. Keyboard navigation and clicking the Art column
+        itself don't trigger this -- see `LibraryPanel.row_clicked` -- so
+        browsing with the library's own artwork preview stays possible."""
+        if paths:
+            self._go_tags(paths)
 
     def _on_settings_changed(self) -> None:
         """Push new defaults into the panels that display them."""
@@ -229,6 +241,29 @@ class MainWindow(QMainWindow):
         updated = [r for r in payload if r.updated]
         self.status_message.setText(
             f"Artwork: updated {len(updated)} of {len(payload)} track(s)"
+        )
+        self._reindex([r.path for r in updated])
+
+    def _fix_library_tags(self, paths: list[Path]) -> None:
+        if not paths:
+            self.status_message.setText("Nothing selected to fix")
+            return
+
+        def work(context, targets):
+            return tag_fix_module.fix_library_tags(targets, context=context)
+
+        job = self.jobs.submit_func(
+            f"Fixing metadata for {len(paths)} track(s)", work, paths, category="tags"
+        )
+        job.signals.finished.connect(self._on_tags_fixed)
+
+    def _on_tags_fixed(self, _job_id: str, state: str, payload) -> None:
+        if state != "succeeded":
+            self.status_message.setText(f"Fix metadata failed: {payload}")
+            return
+        updated = [r for r in payload if r.updated]
+        self.status_message.setText(
+            f"Fix metadata: updated {len(updated)} of {len(payload)} track(s)"
         )
         self._reindex([r.path for r in updated])
 
