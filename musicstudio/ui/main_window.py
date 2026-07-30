@@ -36,6 +36,7 @@ from .jobs_dock import JobsDock
 from .library_view import LibraryPanel
 from .settings_panel import SettingsPanel
 from .tag_panel import TagPanel
+from .widgets.now_playing import NowPlayingBar
 
 #: (label, icon glyph) for each sidebar entry, in order.
 PAGES = [
@@ -89,9 +90,19 @@ class MainWindow(QMainWindow):
     # -- construction ---------------------------------------------------
     def _build(self) -> None:
         central = QWidget()
-        layout = QHBoxLayout(central)
+        outer_layout = QVBoxLayout(central)
+        outer_layout.setContentsMargins(0, 0, 0, 0)
+        outer_layout.setSpacing(0)
+
+        # The sidebar and page stack live in their own row; the playback bar
+        # sits below that row so it stays visible no matter which page is
+        # showing -- browsing, tagging and listening are not mutually
+        # exclusive activities.
+        body = QWidget()
+        layout = QHBoxLayout(body)
         layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(0)
+        outer_layout.addWidget(body, 1)
 
         # -- sidebar ----------------------------------------------------
         sidebar_container = QWidget()
@@ -145,6 +156,10 @@ class MainWindow(QMainWindow):
             self.stack.addWidget(panel)
         layout.addWidget(self.stack, 1)
 
+        # -- persistent playback bar --------------------------------------
+        self.now_playing_bar = NowPlayingBar()
+        outer_layout.addWidget(self.now_playing_bar)
+
         self.setCentralWidget(central)
 
         # -- docks and status -------------------------------------------
@@ -166,7 +181,17 @@ class MainWindow(QMainWindow):
         self.library_panel.artwork_requested.connect(self._update_artwork)
         self.library_panel.tags_fix_requested.connect(self._fix_library_tags)
         self.library_panel.ytmusic_format_requested.connect(self._format_for_ytmusic)
-        self.library_panel.row_clicked.connect(self._go_tags_on_select)
+        self.library_panel.play_requested.connect(self.now_playing_bar.play_queue)
+        self.download_panel.preview_ready.connect(
+            lambda path: self.now_playing_bar.play_queue([path], 0)
+        )
+
+        # Two independent playback engines exist -- this bar, for casual
+        # listening, and the Editor's own player, for previewing edits --
+        # so starting one pauses the other rather than letting both play
+        # over each other.
+        self.now_playing_bar.playing_changed.connect(self._on_now_playing_started)
+        self.editor_panel.player.playing_changed.connect(self._on_editor_playback_started)
 
         # Anything that produces or changes a file re-indexes it.
         self.download_panel.downloaded.connect(self._reindex)
@@ -200,14 +225,13 @@ class MainWindow(QMainWindow):
         self.tag_panel.set_files(paths)
         self.go_to("Tags")
 
-    def _go_tags_on_select(self, paths: list[Path]) -> None:
-        """Jump to Tags & art on a plain row click (or Ctrl/Shift-click), so
-        clicking songs flows straight into editing their metadata without an
-        extra button press. Keyboard navigation and clicking the Art column
-        itself don't trigger this -- see `LibraryPanel.row_clicked` -- so
-        browsing with the library's own artwork preview stays possible."""
-        if paths:
-            self._go_tags(paths)
+    def _on_now_playing_started(self, playing: bool) -> None:
+        if playing and self.editor_panel.player.is_playing:
+            self.editor_panel.player.pause()
+
+    def _on_editor_playback_started(self, playing: bool) -> None:
+        if playing and self.now_playing_bar.player.is_playing:
+            self.now_playing_bar.player.pause()
 
     def _on_settings_changed(self) -> None:
         """Push new defaults into the panels that display them."""

@@ -133,6 +133,76 @@ class UrlInfo:
         return f"{hours}:{minutes:02d}:{seconds:02d}" if hours else f"{minutes}:{seconds:02d}"
 
 
+@dataclass
+class SearchResult:
+    """One hit from :func:`search`, light enough to list dozens at once."""
+
+    title: str
+    uploader: str = ""
+    duration: float = 0.0
+    url: str = ""
+    thumbnail: str = ""
+
+    @property
+    def duration_label(self) -> str:
+        if not self.duration:
+            return ""
+        minutes, seconds = divmod(int(self.duration), 60)
+        hours, minutes = divmod(minutes, 60)
+        return f"{hours}:{minutes:02d}:{seconds:02d}" if hours else f"{minutes}:{seconds:02d}"
+
+
+def search(query: str, *, limit: int = 20) -> list[SearchResult]:
+    """Search YouTube for ``query`` without downloading anything.
+
+    yt-dlp's own search extractors (``ytsearchN:query``) are what make this
+    possible without a separate API key or account -- the same reason the
+    rest of this module leans on yt-dlp instead of a site-specific SDK. Flat
+    extraction keeps this fast: it reads the results page rather than
+    resolving every video's full format list up front, which a search over
+    20 results would otherwise pay for one at a time.
+    """
+    import yt_dlp
+
+    query = query.strip()
+    if not query:
+        return []
+
+    options = {
+        "quiet": True,
+        "no_warnings": True,
+        "skip_download": True,
+        "extract_flat": "in_playlist",
+    }
+    try:
+        with yt_dlp.YoutubeDL(options) as ydl:
+            info = ydl.extract_info(f"ytsearch{max(1, limit)}:{query}", download=False)
+    except Exception as exc:
+        raise DownloadError(f"Search failed: {exc}") from exc
+
+    entries = [e for e in (info or {}).get("entries") or [] if e]
+    results = []
+    for entry in entries:
+        video_id = entry.get("id")
+        url = (
+            entry.get("webpage_url")
+            or entry.get("url")
+            or (f"https://www.youtube.com/watch?v={video_id}" if video_id else "")
+        )
+        if not url:
+            continue
+        results.append(
+            SearchResult(
+                title=entry.get("title") or "Unknown",
+                uploader=entry.get("uploader") or entry.get("channel") or "",
+                duration=float(entry.get("duration") or 0),
+                url=url,
+                thumbnail=entry.get("thumbnail") or "",
+            )
+        )
+    return results
+
+
 def inspect_url(url: str, *, playlist_limit: int = 0) -> UrlInfo:
     """Read a URL's metadata without downloading it.
 

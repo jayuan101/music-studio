@@ -153,12 +153,6 @@ class LibraryPanel(QWidget):
 
     #: Emitted with the paths the user selected.
     selection_changed = Signal(list)
-    #: Emitted on a plain row click (not on the Art column) -- the signal that
-    #: drives auto-navigating to Tags & art. Kept separate from
-    #: `selection_changed` so keyboard navigation and clicking the Art column
-    #: itself can update the in-Library artwork preview without being yanked
-    #: away to another page.
-    row_clicked = Signal(list)
     #: Emitted when the user asks to act on the selection.
     convert_requested = Signal(list)
     edit_requested = Signal(object)         # a single path
@@ -166,6 +160,10 @@ class LibraryPanel(QWidget):
     artwork_requested = Signal(list)
     tags_fix_requested = Signal(list)
     ytmusic_format_requested = Signal(list)
+    #: Double-click: play this track, queuing every track currently visible
+    #: (respecting the active search/sort) -- paths, then the clicked row's
+    #: index within that list.
+    play_requested = Signal(list, int)
 
     def __init__(self, library: Library, job_queue, parent=None) -> None:
         super().__init__(parent)
@@ -188,10 +186,6 @@ class LibraryPanel(QWidget):
         self._sync_watched_roots()
 
         self.refresh()
-
-    #: Column index of "Art" in TrackTableModel.COLUMNS -- clicking it previews
-    #: artwork in place rather than jumping away to Tags & art.
-    ART_COLUMN = 8
 
     # -- construction ---------------------------------------------------
     def _build(self) -> None:
@@ -261,7 +255,6 @@ class LibraryPanel(QWidget):
         self.table.verticalHeader().setDefaultSectionSize(30)
         self.table.setShowGrid(False)
         self.table.doubleClicked.connect(self._on_double_click)
-        self.table.clicked.connect(self._on_row_clicked)
         self.table.selectionModel().selectionChanged.connect(self._on_selection_changed)
 
         header = self.table.horizontalHeader()
@@ -408,13 +401,6 @@ class LibraryPanel(QWidget):
         self.selection_changed.emit(paths)
         self._refresh_artwork_preview(paths)
 
-    def _on_row_clicked(self, index: QModelIndex) -> None:
-        if index.column() == self.ART_COLUMN:
-            return
-        paths = self.selected_paths()
-        if paths:
-            self.row_clicked.emit(paths)
-
     def _update_actions(self) -> None:
         selected = len(self.table.selectionModel().selectedRows()) if hasattr(self, "table") else 0
         has_any = self.model.rowCount() > 0
@@ -438,7 +424,7 @@ class LibraryPanel(QWidget):
     def _on_double_click(self, index: QModelIndex) -> None:
         track = self.model.track_at(index.row())
         if track is not None:
-            self.edit_requested.emit(track.path)
+            self.play_requested.emit(self.all_paths(), index.row())
 
     def _emit_edit(self) -> None:
         paths = self.selected_paths()
