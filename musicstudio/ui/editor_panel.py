@@ -81,6 +81,7 @@ class EditorPanel(QWidget):
         # -- transport --------------------------------------------------
         self.player = Player()
         self.player.position_changed.connect(self.waveform.set_playhead)
+        self.player.play_requested.connect(self._on_play_requested)
 
         self.preview = PreviewController(self.player, self.jobs, self)
 
@@ -184,12 +185,14 @@ class EditorPanel(QWidget):
         self.gain_mode.addItem("Compress, then boost (loudest)", GainMode.COMPRESS.value)
         self.gain_mode.addItem("Raw gain — allow clipping", GainMode.RAW.value)
         self.gain_mode.currentIndexChanged.connect(self._update_gain_warning)
+        self.gain_mode.currentIndexChanged.connect(self._update_summary)
 
         self.ceiling_spin = QDoubleSpinBox()
         self.ceiling_spin.setRange(-6.0, 0.0)
         self.ceiling_spin.setSingleStep(0.1)
         self.ceiling_spin.setValue(self.settings.limiter_ceiling_db)
         self.ceiling_spin.setSuffix(" dBTP ceiling")
+        self.ceiling_spin.valueChanged.connect(self._update_summary)
 
         self.gain_warning = QLabel("")
         self.gain_warning.setWordWrap(True)
@@ -420,7 +423,26 @@ class EditorPanel(QWidget):
         if selection is None:
             self.player.set_status("Drag across the waveform to select a region first")
             return
-        self.player.play(start=selection[0], stop=selection[1])
+        if self.build_spec().is_empty:
+            self.player.play(start=selection[0], stop=selection[1])
+            return
+        # The rendered preview is a fixed-length excerpt, so it cannot honor
+        # a selection end -- the same limitation "Preview with effects" has.
+        self.preview.configure(self._path, self.build_spec)
+        self.preview.request(selection[0])
+
+    def _on_play_requested(self) -> None:
+        """Route Play/spacebar through the effect chain, unless there is none.
+
+        The transport otherwise plays the raw source, so a gain increase (or
+        any other edit) would silently have no audible effect until the user
+        found the separate "Preview with effects" button.
+        """
+        if self._path is None or self.build_spec().is_empty:
+            self.player.play()
+            return
+        self.preview.configure(self._path, self.build_spec)
+        self.preview.request(self.player.position)
 
     def _preview_effects(self) -> None:
         """Render and play a short excerpt with the effect stack applied."""
@@ -439,6 +461,19 @@ class EditorPanel(QWidget):
         start = selection[0] if selection else 0.0
         self.preview.configure(self._path, self.build_spec)
         self.preview.request(start)
+
+    def _refresh_preview_if_playing(self) -> None:
+        """Keep an in-progress preview in sync with the controls being edited.
+
+        Without this, dragging the gain slider while a preview is already
+        playing would only take effect the next time Play is pressed.
+        """
+        if not self._is_fully_built() or self._path is None or not self.player.is_playing:
+            return
+        if self.build_spec().is_empty:
+            return
+        self.preview.configure(self._path, self.build_spec)
+        self.preview.request(self.player.position)
 
     def keyPressEvent(self, event) -> None:
         # Space is the universal play/pause in audio tools.
@@ -532,7 +567,10 @@ class EditorPanel(QWidget):
         else:
             self.gain_warning.setText(
                 f"Boosting {gain_db:+.1f} dB with a lookahead limiter at "
-                f"{self.ceiling_spin.value():+.1f} dBTP, so it gets loud without clipping."
+                f"{self.ceiling_spin.value():+.1f} dBTP, so it gets loud without clipping. "
+                f"If the source is already loud, extra gain here may stop making an audible "
+                f"difference — use Measure clipping to check exactly how close you are to the "
+                f"ceiling."
             )
             self.gain_warning.setStyleSheet(f"color: {theme.LOSSLESS};")
 
@@ -651,6 +689,7 @@ class EditorPanel(QWidget):
         self.summary_label.setText(
             f"{' · '.join(parts)}  →  {format_duration(duration)}"
         )
+        self._refresh_preview_if_playing()
 
     # -- export ---------------------------------------------------------
     def _export(self) -> None:

@@ -336,6 +336,22 @@ def test_gain_actually_raises_the_level(tone_flac, tmp_path):
     assert probe.measure_clipping(destination).peak_dbfs == pytest.approx(before + 12, abs=0.3)
 
 
+def test_moderate_boost_raises_level_in_default_limit_mode(tone_flac, tmp_path):
+    """A moderate gain, well under the ceiling, must still raise the level in
+    the default GainMode.LIMIT -- not just in RAW (test_gain_actually_raises_the_level)."""
+    before = probe.measure_clipping(tone_flac).peak_dbfs
+    destination = tmp_path / "moderate.flac"
+    convert.convert(
+        ConvertRequest(
+            tone_flac, destination, formats.FLAC,
+            edits=EditSpec(gain_db=6, gain_mode=GainMode.LIMIT, limiter_ceiling_db=-0.3),
+            overwrite=True,
+        )
+    )
+    after = probe.measure_clipping(destination).peak_dbfs
+    assert after == pytest.approx(before + 6, abs=0.3)
+
+
 def test_dynamic_normalize_lifts_a_quiet_file(tone_flac, tmp_path):
     """Regression: without altboundary=1 this silently did nothing."""
     before = probe.measure_clipping(tone_flac).peak_dbfs
