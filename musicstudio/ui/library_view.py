@@ -42,6 +42,28 @@ class TrackTableModel(QAbstractTableModel):
         self._tracks = tracks
         self.endResetModel()
 
+    #: One sort key per column, in COLUMNS order. Text columns sort
+    #: case-insensitively so "abba" and "ABBA" land next to each other.
+    _SORT_KEYS = [
+        lambda t: t.track_number or 0,
+        lambda t: (t.display_title or "").lower(),
+        lambda t: (t.display_artist or "").lower(),
+        lambda t: (t.album or "").lower(),
+        lambda t: (t.albumartist or "").lower(),
+        lambda t: t.date or "",
+        lambda t: t.duration,
+        lambda t: (t.is_lossless, t.bitrate),
+        lambda t: t.has_artwork,
+        lambda t: (t.genre or "").lower(),
+    ]
+
+    def sort(self, column: int, order: Qt.SortOrder = Qt.AscendingOrder) -> None:
+        if not 0 <= column < len(self._SORT_KEYS):
+            return
+        self.layoutAboutToBeChanged.emit()
+        self._tracks.sort(key=self._SORT_KEYS[column], reverse=order == Qt.DescendingOrder)
+        self.layoutChanged.emit()
+
     def track_at(self, proxy_row: int) -> TrackRow | None:
         if 0 <= proxy_row < len(self._tracks):
             return self._tracks[proxy_row]
@@ -179,7 +201,8 @@ class LibraryPanel(QWidget):
         self.table.setSelectionBehavior(QAbstractItemView.SelectRows)
         self.table.setSelectionMode(QAbstractItemView.ExtendedSelection)
         self.table.setAlternatingRowColors(True)
-        self.table.setSortingEnabled(False)
+        self.table.setSortingEnabled(True)
+        self.table.sortByColumn(4, Qt.AscendingOrder)  # Album Artist, matching the library's own order
         self.table.verticalHeader().setVisible(False)
         self.table.verticalHeader().setDefaultSectionSize(30)
         self.table.setShowGrid(False)
@@ -245,6 +268,10 @@ class LibraryPanel(QWidget):
 
     def _apply_search(self, term: str) -> None:
         self.model.set_tracks(self.library.search(term))
+        # A model reset does not re-sort itself, so a search keystroke or a
+        # rescan would otherwise silently drop the user's chosen sort column.
+        header = self.table.horizontalHeader()
+        self.table.sortByColumn(header.sortIndicatorSection(), header.sortIndicatorOrder())
         self._update_actions()
 
     def selected_paths(self) -> list[Path]:
