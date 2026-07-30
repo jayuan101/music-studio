@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from PySide6.QtCore import QAbstractTableModel, QModelIndex, Qt, Signal
+from PySide6.QtCore import QAbstractTableModel, QFileSystemWatcher, QModelIndex, QTimer, Qt, Signal
 from PySide6.QtGui import QColor
 from PySide6.QtWidgets import (
     QAbstractItemView,
@@ -28,7 +28,10 @@ from .common import format_size, heading, row, spacer
 class TrackTableModel(QAbstractTableModel):
     """Table model over indexed tracks."""
 
-    COLUMNS = ["#", "Title", "Artist", "Album", "Year", "Length", "Quality", "Art"]
+    COLUMNS = [
+        "#", "Title", "Artist", "Album", "Album Artist", "Year", "Length",
+        "Quality", "Art", "Genre",
+    ]
 
     def __init__(self, parent=None) -> None:
         super().__init__(parent)
@@ -67,23 +70,25 @@ class TrackTableModel(QAbstractTableModel):
                 track.display_title,
                 track.display_artist,
                 track.album or "—",
+                track.albumartist or "—",
                 (track.date or "")[:4],
                 track.duration_label,
                 track.quality_label,
                 track.artwork_label,
+                track.genre or "—",
             ][column]
 
         if role == Qt.ForegroundRole:
             # Lossless files are the ones worth keeping; make them findable
             # at a glance rather than by reading the codec column.
-            if column == 6:
+            if column == 7:
                 return QColor(theme.LOSSLESS if track.is_lossless else theme.LOSSY)
-            if column == 7 and not track.has_artwork:
+            if column == 8 and not track.has_artwork:
                 return QColor(theme.TEXT_FAINT)
-            if column in (0, 4):
+            if column in (0, 5):
                 return QColor(theme.TEXT_DIM)
 
-        if role == Qt.TextAlignmentRole and column in (0, 4, 5, 7):
+        if role == Qt.TextAlignmentRole and column in (0, 5, 6, 8):
             return int(Qt.AlignCenter)
 
         if role == Qt.ToolTipRole:
@@ -109,6 +114,20 @@ class LibraryPanel(QWidget):
         self.jobs = job_queue
         self._build()
         self.setAcceptDrops(True)
+
+        # Files copied into a remembered folder from outside the app (e.g.
+        # Explorer) should appear without the user having to click Rescan.
+        self._watcher = QFileSystemWatcher(self)
+        self._watcher.directoryChanged.connect(self._on_watched_dir_changed)
+        self._rescan_timer = QTimer(self)
+        self._rescan_timer.setSingleShot(True)
+        # Debounced: copying a whole album fires many change events in a
+        # burst, and each one restarts this timer instead of triggering its
+        # own rescan.
+        self._rescan_timer.setInterval(1500)
+        self._rescan_timer.timeout.connect(self.rescan_known_roots)
+        self._sync_watched_roots()
+
         self.refresh()
 
     # -- construction ---------------------------------------------------
@@ -173,7 +192,8 @@ class LibraryPanel(QWidget):
         header.setSectionResizeMode(1, QHeaderView.Stretch)
         header.setSectionResizeMode(2, QHeaderView.Stretch)
         header.setSectionResizeMode(3, QHeaderView.Stretch)
-        for column, width in ((4, 60), (5, 70), (6, 130), (7, 60)):
+        header.setSectionResizeMode(4, QHeaderView.Stretch)
+        for column, width in ((5, 60), (6, 70), (7, 130), (8, 60), (9, 110)):
             header.setSectionResizeMode(column, QHeaderView.Fixed)
             header.resizeSection(column, width)
         layout.addWidget(self.table, 1)
@@ -313,6 +333,35 @@ class LibraryPanel(QWidget):
                 # Failing to remember a folder is not worth interrupting an
                 # import that otherwise succeeded.
                 pass
+        self._sync_watched_roots()
+
+    def _sync_watched_roots(self) -> None:
+        """Watch every remembered folder, and its subfolders, for changes.
+
+        QFileSystemWatcher only reports changes in directories it was
+        explicitly given, so a plain top-level watch would miss files
+        dropped into an album subfolder. Re-walking on every sync also
+        picks up subfolders created since the last sync.
+        """
+        existing = self._watcher.directories()
+        if existing:
+            self._watcher.removePaths(existing)
+
+        directories: set[str] = set()
+        for root in get_settings().library_paths:
+            root_path = Path(root)
+            if not root_path.is_dir():
+                continue
+            directories.add(str(root_path))
+            for sub in root_path.rglob("*"):
+                if sub.is_dir():
+                    directories.add(str(sub))
+
+        if directories:
+            self._watcher.addPaths(sorted(directories))
+
+    def _on_watched_dir_changed(self, _path: str) -> None:
+        self._rescan_timer.start()
 
     def rescan_known_roots(self) -> None:
         """Re-index every remembered folder, picking up outside changes."""
@@ -333,6 +382,7 @@ class LibraryPanel(QWidget):
 
     def _on_rescanned(self, _job_id: str, state: str, payload) -> None:
         self.refresh()
+        self._sync_watched_roots()
         if state == "succeeded" and payload:
             imported, _skipped, removed = payload
             parts = []
