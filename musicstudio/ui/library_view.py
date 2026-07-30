@@ -320,7 +320,7 @@ class LibraryPanel(QWidget):
             self,
             "Add music files",
             "",
-            "Audio files (*.flac *.mp3 *.m4a *.wav *.aiff *.ogg *.opus *.wma *.wv *.ape *.aac);;"
+            "Audio files (*.flac *.mp3 *.m4a *.wav *.aiff *.ogg *.opus *.wma *.wv *.ape *.aac *.mp4);;"
             "All files (*)",
         )
         if paths:
