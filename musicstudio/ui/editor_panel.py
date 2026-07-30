@@ -17,6 +17,7 @@ from PySide6.QtWidgets import (
     QGridLayout,
     QGroupBox,
     QLabel,
+    QMessageBox,
     QPushButton,
     QScrollArea,
     QSlider,
@@ -144,6 +145,14 @@ class EditorPanel(QWidget):
         self.export_button.clicked.connect(self._export)
         self.export_button.setEnabled(False)
 
+        self.save_button = QPushButton("Save")
+        self.save_button.setToolTip(
+            "Apply these edits to the library file in place, keeping its current "
+            "format and location -- no new file, no Export dialog."
+        )
+        self.save_button.clicked.connect(self._save_in_place)
+        self.save_button.setEnabled(False)
+
         self.summary_label = QLabel("")
         self.summary_label.setObjectName("Hint")
         self.summary_label.setWordWrap(True)
@@ -152,6 +161,7 @@ class EditorPanel(QWidget):
             row(
                 self.summary_label,
                 spacer(),
+                self.save_button,
                 QLabel("Export as"),
                 self.export_format,
                 self.export_button,
@@ -387,6 +397,7 @@ class EditorPanel(QWidget):
             )
             self.export_format.setCurrentIndex(max(0, index))
         self.export_button.setEnabled(self._info is not None)
+        self.save_button.setEnabled(self._info is not None)
 
         # Any in-flight preview belongs to the previous file.
         self.preview.cancel()
@@ -735,6 +746,90 @@ class EditorPanel(QWidget):
             self.exported.emit([payload.destination])
         elif state == "failed":
             self.summary_label.setText(f"Export failed: {payload}")
+
+    def _save_in_place(self) -> None:
+        """Apply the current edits to the library file itself.
+
+        ffmpeg cannot read and overwrite the same file at once, so `convert()`
+        deliberately refuses a destination that resolves to its own source
+        (see core/convert.py). The safe way to still end up with the edits
+        applied at the *same path* is: encode to a temp file beside it, carry
+        the original tags over, then atomically replace the original --
+        nothing at the real path changes until the very last step succeeds.
+        """
+        if self._path is None or self._info is None:
+            return
+        if self.build_spec().is_empty:
+            self.summary_label.setText("No edits to save.")
+            return
+
+        profile = formats.profile_for_extension(self._path.suffix)
+        if profile is None:
+            self.summary_label.setText(
+                f"Don't know how to re-encode {self._path.suffix} files in place."
+            )
+            return
+
+        confirmed = QMessageBox.question(
+            self,
+            "Save in place",
+            f"Apply these edits to \"{self._path.name}\" and overwrite it?\n\n"
+            "This replaces the file in your library. The original audio is not kept.",
+            QMessageBox.Yes | QMessageBox.Cancel,
+            QMessageBox.Cancel,
+        )
+        if confirmed != QMessageBox.Yes:
+            return
+
+        source = self._path
+        spec = self.build_spec()
+        self.save_button.setEnabled(False)
+        self.export_button.setEnabled(False)
+
+        def work(context, source, spec, profile):
+            import os
+
+            from ..core import tags as tags_module
+
+            original_tags = tags_module.try_read(source)
+            tmp_destination = source.with_name(f".{source.stem}.tmp{profile.extension}")
+            request = convert_module.ConvertRequest(
+                source=source,
+                destination=tmp_destination,
+                profile=profile,
+                edits=spec,
+                overwrite=True,
+            )
+            try:
+                result = convert_module.convert(context=context, request=request)
+                try:
+                    tags_module.write(
+                        result.destination, original_tags, artwork=original_tags.artwork
+                    )
+                except tags_module.TagError:
+                    pass
+                os.replace(result.destination, source)
+            except BaseException:
+                tmp_destination.unlink(missing_ok=True)
+                raise
+            return source
+
+        job = self.jobs.submit_func(
+            f"Saving {source.name}", work, source, spec, profile, category="export"
+        )
+        job.signals.finished.connect(self._on_saved_in_place)
+
+    def _on_saved_in_place(self, _job_id: str, state: str, payload) -> None:
+        self.save_button.setEnabled(self._info is not None)
+        self.export_button.setEnabled(self._info is not None)
+        if state == "succeeded":
+            self.summary_label.setText(f"Saved {payload.name}")
+            self.exported.emit([payload])
+            # The file on disk changed under the currently loaded path --
+            # reload it so the waveform/player reflect what's actually there.
+            self.load(payload)
+        elif state == "failed":
+            self.summary_label.setText(f"Save failed: {payload}")
 
 
 def _scrollable(widget: QWidget) -> QScrollArea:
