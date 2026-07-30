@@ -367,7 +367,10 @@ def normalise_tags(tags: TagSet, *, album_artist: str | None = None) -> TagSet:
         # so a featured guest cannot split an album in two.
         updated.albumartist = updated.artist
     else:
-        carried = split_featured(tags.albumartist)[0] or tags.albumartist
+        # An album artist that is nothing but a credit -- "(feat. Birdman,
+        # Jay Sean, Lil Wayne)" -- names nobody once the marker is stripped,
+        # so the track's own artist is the only real answer.
+        carried = split_featured(tags.albumartist)[0] or updated.artist
         # "Various Artists" is only meaningful on an actual album. Left on a
         # track with none, it files the song under a compilation that does
         # not exist.

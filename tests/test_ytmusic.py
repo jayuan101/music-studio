@@ -266,6 +266,18 @@ def test_an_album_with_no_dominant_artist_is_a_compilation():
     assert resolved[key] == ytmusic.VARIOUS_ARTISTS
 
 
+def test_an_album_artist_that_is_only_a_credit_falls_back_to_the_artist():
+    """"(feat. Birdman, Jay Sean, Lil Wayne)" names nobody."""
+    result = ytmusic.normalise_tags(
+        T.TagSet(
+            title="I Made It",
+            artist="Kevin Rudolf",
+            albumartist="(feat. Birdman, Jay Sean, Lil Wayne)",
+        )
+    )
+    assert result.albumartist == "Kevin Rudolf"
+
+
 def test_various_artists_is_dropped_when_there_is_no_album():
     """It only means something on a real release."""
     result = ytmusic.normalise_tags(
