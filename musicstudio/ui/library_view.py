@@ -13,6 +13,7 @@ from PySide6.QtWidgets import (
     QHeaderView,
     QLabel,
     QLineEdit,
+    QMessageBox,
     QPushButton,
     QTableView,
     QVBoxLayout,
@@ -241,6 +242,9 @@ class LibraryPanel(QWidget):
         self.artwork_button.clicked.connect(
             lambda: self.artwork_requested.emit(self.selected_paths() or self.all_paths())
         )
+        self.delete_button = QPushButton("Delete…")
+        self.delete_button.setObjectName("Danger")
+        self.delete_button.clicked.connect(self._delete_selected)
 
         layout.addWidget(
             row(
@@ -250,6 +254,7 @@ class LibraryPanel(QWidget):
                 self.edit_button,
                 self.tags_button,
                 self.artwork_button,
+                self.delete_button,
             )
         )
         self._update_actions()
@@ -294,6 +299,7 @@ class LibraryPanel(QWidget):
         self.edit_button.setEnabled(selected == 1)
         self.tags_button.setEnabled(selected > 0)
         self.artwork_button.setEnabled(has_any)
+        self.delete_button.setEnabled(selected > 0)
         self.artwork_button.setText(
             f"Update artwork ({selected})" if selected else "Update all artwork"
         )
@@ -420,6 +426,44 @@ class LibraryPanel(QWidget):
             self.status_label.setText(
                 "Rescan: " + (", ".join(parts) if parts else "nothing changed")
             )
+
+    def _delete_selected(self) -> None:
+        """Permanently delete the selected files from disk, not just the index."""
+        paths = self.selected_paths()
+        if not paths:
+            return
+
+        names = "\n".join(p.name for p in paths[:10])
+        if len(paths) > 10:
+            names += f"\n… and {len(paths) - 10} more"
+        reply = QMessageBox.warning(
+            self,
+            "Delete from disk",
+            f"Permanently delete {len(paths)} file(s)? This cannot be undone.\n\n{names}",
+            QMessageBox.Yes | QMessageBox.Cancel,
+            QMessageBox.Cancel,
+        )
+        if reply != QMessageBox.Yes:
+            return
+
+        failed = []
+        deleted = 0
+        for path in paths:
+            try:
+                path.unlink()
+            except OSError as exc:
+                failed.append(f"{path.name}: {exc}")
+            else:
+                self.library.remove(path)
+                deleted += 1
+
+        self.refresh()
+        if failed:
+            self.status_label.setText(
+                f"Deleted {deleted} file(s); {len(failed)} failed: {'; '.join(failed)}"
+            )
+        else:
+            self.status_label.setText(f"Deleted {deleted} file(s)")
 
     def remove_missing(self) -> None:
         """Drop rows whose files are no longer on disk."""
