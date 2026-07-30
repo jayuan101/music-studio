@@ -449,6 +449,15 @@ def _apply_download_metadata(
     )
     merged = existing.merged_with(new_tags)
 
+    # A YouTube title is not a song title: it carries "(Official Video)",
+    # repeats the artist, and leaves album artist blank -- which is the field
+    # YouTube Music groups a library by. Normalising here means downloads land
+    # already in shape instead of needing a cleanup pass later.
+    if settings.ytmusic_format_downloads:
+        from . import ytmusic as ytmusic_module
+
+        merged = ytmusic_module.normalise_tags(merged)
+
     artwork_image = existing.artwork
     if request.embed_thumbnail and artwork_image is None:
         artwork_image = _load_sidecar_thumbnail(track.path)

@@ -245,6 +245,14 @@ class SettingsPanel(QWidget):
         self.download_thumbnail = QCheckBox("Use the video thumbnail as cover art")
         self.download_thumbnail.toggled.connect(self._save)
 
+        self.ytmusic_downloads = QCheckBox("Tag downloads in YouTube Music format")
+        self.ytmusic_downloads.setToolTip(
+            "Clean “(Official Video)”-style noise out of the title, move guests into "
+            "it as “(feat. X)”, and always fill album artist — the field YouTube "
+            "Music groups a library by."
+        )
+        self.ytmusic_downloads.toggled.connect(self._save)
+
         self.playlist_limit = QSpinBox()
         self.playlist_limit.setRange(0, 1000)
         self.playlist_limit.setSpecialValueText("All")
@@ -258,7 +266,9 @@ class SettingsPanel(QWidget):
         form_layout.addRow("Default mode", self.download_mode)
         form_layout.addRow("Playlist limit", self.playlist_limit)
 
-        return card(section_label("Downloads"), form, self.download_thumbnail)
+        return card(
+            section_label("Downloads"), form, self.download_thumbnail, self.ytmusic_downloads
+        )
 
     def _build_ai_card(self) -> QWidget:
         self.ai_ollama_host = QLineEdit()
@@ -389,6 +399,7 @@ class SettingsPanel(QWidget):
         index = self.download_mode.findData(s.download_mode)
         self.download_mode.setCurrentIndex(max(0, index))
         self.download_thumbnail.setChecked(s.download_embed_thumbnail)
+        self.ytmusic_downloads.setChecked(s.ytmusic_format_downloads)
         self.playlist_limit.setValue(s.download_playlist_limit)
 
         self.ai_ollama_host.setText(s.ai_ollama_host)
@@ -432,6 +443,7 @@ class SettingsPanel(QWidget):
 
         s.download_mode = self.download_mode.currentData()
         s.download_embed_thumbnail = self.download_thumbnail.isChecked()
+        s.ytmusic_format_downloads = self.ytmusic_downloads.isChecked()
         s.download_playlist_limit = self.playlist_limit.value()
 
         s.ai_ollama_host = self.ai_ollama_host.text().strip() or s.ai_ollama_host

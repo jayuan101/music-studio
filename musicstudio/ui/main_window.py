@@ -24,6 +24,7 @@ from ..config import ensure_dirs, get_settings
 from ..core import artwork as artwork_module
 from ..core import ffmpeg
 from ..core import tag_fix as tag_fix_module
+from ..core import ytmusic as ytmusic_module
 from ..core.jobs import JobQueue
 from ..db import Library
 from . import theme
@@ -164,6 +165,7 @@ class MainWindow(QMainWindow):
         self.library_panel.tags_requested.connect(self._go_tags)
         self.library_panel.artwork_requested.connect(self._update_artwork)
         self.library_panel.tags_fix_requested.connect(self._fix_library_tags)
+        self.library_panel.ytmusic_format_requested.connect(self._format_for_ytmusic)
         self.library_panel.row_clicked.connect(self._go_tags_on_select)
 
         # Anything that produces or changes a file re-indexes it.
@@ -264,6 +266,51 @@ class MainWindow(QMainWindow):
         updated = [r for r in payload if r.updated]
         self.status_message.setText(
             f"Fix metadata: updated {len(updated)} of {len(payload)} track(s)"
+        )
+        self._reindex([r.path for r in updated])
+
+    def _format_for_ytmusic(self, paths: list[Path]) -> None:
+        if not paths:
+            self.status_message.setText("Nothing selected to format")
+            return
+
+        confirmed = QMessageBox.question(
+            self,
+            "YouTube Music format",
+            f"Reshape the tags of {len(paths)} track(s) to YouTube Music's conventions?\n\n"
+            "This rewrites titles, artists, album artists and genres — unlike "
+            "“Fix metadata”, which only fills in blanks.\n\n"
+            "The current tags are saved to a snapshot first, so this can be undone.",
+            QMessageBox.Yes | QMessageBox.Cancel,
+            QMessageBox.Cancel,
+        )
+        if confirmed != QMessageBox.Yes:
+            return
+
+        def work(context, targets):
+            from ..config import DATA_DIR
+
+            context.progress(0.0, "Saving a snapshot of the current tags…")
+            snapshot = ytmusic_module.snapshot_tags(
+                [Path(t) for t in targets], Path(DATA_DIR) / "ytmusic-tag-snapshot.json"
+            )
+            results = ytmusic_module.normalise_library(targets, context=context)
+            return snapshot, results
+
+        job = self.jobs.submit_func(
+            f"YouTube Music format for {len(paths)} track(s)", work, paths, category="tags"
+        )
+        job.signals.finished.connect(self._on_ytmusic_formatted)
+
+    def _on_ytmusic_formatted(self, _job_id: str, state: str, payload) -> None:
+        if state != "succeeded":
+            self.status_message.setText(f"YouTube Music format failed: {payload}")
+            return
+        snapshot, results = payload
+        updated = [r for r in results if r.updated]
+        self.status_message.setText(
+            f"YouTube Music format: updated {len(updated)} of {len(results)} track(s) "
+            f"· previous tags saved to {snapshot.name}"
         )
         self._reindex([r.path for r in updated])
 
