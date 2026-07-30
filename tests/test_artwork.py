@@ -117,6 +117,42 @@ def test_falls_back_to_itunes_when_musicbrainz_has_no_art(monkeypatch, cover_png
     assert found.data == cover_png
 
 
+def test_itunes_query_includes_title_alongside_album(monkeypatch, cover_png):
+    """Title used to be dropped whenever an album tag was present, only ever
+    substituting for a missing album -- it must now be searched alongside
+    artist and album, using the more precise "song" entity."""
+    client = install_client(monkeypatch, {
+        "itunes.apple.com/search": FakeResponse(
+            json_data={"results": [{
+                "artworkUrl100": "https://is1.mzstatic.com/image/thumb/x/100x100bb.jpg",
+                "artistName": "The Rearview", "collectionName": "Neon Cartography",
+                "trackName": "Skyline Drift",
+            }]}
+        ),
+        "mzstatic.com": FakeResponse(content=cover_png),
+    })
+    found = artwork.lookup_itunes("The Rearview", "Neon Cartography", title="Skyline Drift")
+    assert found is not None
+
+    _, search_params = next(call for call in client.calls if call[1] and "term" in call[1])
+    assert "Skyline Drift" in search_params["term"]
+    assert "Neon Cartography" in search_params["term"]
+    assert search_params["entity"] == "song"
+
+
+def test_itunes_score_rewards_a_matching_title():
+    # Album deliberately does not match, so the artist+album score alone
+    # (0.75) is below the 1.0 cap -- otherwise both scores would saturate at
+    # the cap and the comparison below would be meaningless.
+    result = {
+        "artistName": "The Rearview", "collectionName": "Something Else Entirely",
+        "trackName": "Skyline Drift",
+    }
+    with_title = artwork._itunes_score(result, "The Rearview", "Neon Cartography", "Skyline Drift")
+    without_title = artwork._itunes_score(result, "The Rearview", "Neon Cartography")
+    assert with_title > without_title
+
+
 def test_itunes_url_is_upgraded_to_full_resolution():
     upgraded = artwork._upgrade_itunes_url(
         "https://is1.mzstatic.com/image/thumb/abc/100x100bb.jpg", 1200
