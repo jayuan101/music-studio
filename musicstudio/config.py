@@ -85,6 +85,12 @@ class Settings:
     download_embed_thumbnail: bool = True
     download_playlist_limit: int = 0  # 0 = no limit
 
+    # -- Metadata style -------------------------------------------------
+    #: Reshape tags to YouTube Music's conventions on download: clean the
+    #: title, move guests into it as "(feat. X)", and always fill album
+    #: artist -- the field YouTube Music groups a library by.
+    ytmusic_format_downloads: bool = True
+
     # -- Editing --------------------------------------------------------
     #: True-peak ceiling used by the limiter when boosting past 0 dB.
     limiter_ceiling_db: float = -0.3

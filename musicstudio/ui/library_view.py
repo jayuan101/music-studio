@@ -165,6 +165,7 @@ class LibraryPanel(QWidget):
     tags_requested = Signal(list)
     artwork_requested = Signal(list)
     tags_fix_requested = Signal(list)
+    ytmusic_format_requested = Signal(list)
 
     def __init__(self, library: Library, job_queue, parent=None) -> None:
         super().__init__(parent)
@@ -303,6 +304,17 @@ class LibraryPanel(QWidget):
         self.fix_tags_button.clicked.connect(
             lambda: self.tags_fix_requested.emit(self.selected_paths() or self.all_paths())
         )
+        self.ytmusic_button = QPushButton("YouTube Music format")
+        self.ytmusic_button.setToolTip(
+            "Reshape tags the way YouTube Music expects: fill album artist (what it "
+            "groups albums by), strip “(Official Video)”-style noise from titles, "
+            "move guests into the title as “(feat. X)”, and fold duplicate genre "
+            "spellings together. Overwrites existing values — the current tags are "
+            "saved first so it can be undone."
+        )
+        self.ytmusic_button.clicked.connect(
+            lambda: self.ytmusic_format_requested.emit(self.selected_paths() or self.all_paths())
+        )
         self.delete_button = QPushButton("Delete…")
         self.delete_button.setObjectName("Danger")
         self.delete_button.clicked.connect(self._delete_selected)
@@ -316,6 +328,7 @@ class LibraryPanel(QWidget):
                 self.tags_button,
                 self.artwork_button,
                 self.fix_tags_button,
+                self.ytmusic_button,
                 self.delete_button,
             )
         )
@@ -410,12 +423,16 @@ class LibraryPanel(QWidget):
         self.tags_button.setEnabled(selected > 0)
         self.artwork_button.setEnabled(has_any)
         self.fix_tags_button.setEnabled(has_any)
+        self.ytmusic_button.setEnabled(has_any)
         self.delete_button.setEnabled(selected > 0)
         self.artwork_button.setText(
             f"Update artwork ({selected})" if selected else "Update all artwork"
         )
         self.fix_tags_button.setText(
             f"Fix metadata ({selected})" if selected else "Fix all metadata"
+        )
+        self.ytmusic_button.setText(
+            f"YouTube Music format ({selected})" if selected else "YouTube Music format"
         )
 
     def _on_double_click(self, index: QModelIndex) -> None:
