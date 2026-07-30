@@ -35,6 +35,9 @@ class Player(QWidget):
     position_changed = Signal(float)
     #: True when playback starts, False when it stops or pauses.
     playing_changed = Signal(bool)
+    #: Emitted instead of playing directly, so the owner can decide whether
+    #: to play the raw file or render the current edits first.
+    play_requested = Signal()
 
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
@@ -157,7 +160,7 @@ class Player(QWidget):
         if self.is_playing:
             self.pause()
         else:
-            self._player.play()
+            self.play_requested.emit()
 
     def seek(self, seconds: float) -> None:
         """Jump to a position. Cancels any region limit.
