@@ -24,11 +24,13 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from .. import __version__
 from ..config import get_settings
 from ..core import artwork as artwork_module
 from ..core import assistant as assistant_module
 from ..core import organise
 from ..core import secrets
+from ..core import updater as updater_module
 from . import theme
 from .common import card, heading, row, section_label, spacer
 
@@ -73,6 +75,7 @@ class SettingsPanel(QWidget):
         layout.addWidget(self._build_editor_card())
         layout.addWidget(self._build_download_card())
         layout.addWidget(self._build_ai_card())
+        layout.addWidget(self._build_update_card())
         layout.addStretch(1)
 
         scroll = QScrollArea()
@@ -331,6 +334,34 @@ class SettingsPanel(QWidget):
             billing_note,
         )
 
+    def _build_update_card(self) -> QWidget:
+        self.version_label = QLabel(f"Installed version: {__version__}")
+        self.version_label.setObjectName("Hint")
+
+        self.check_update_button = QPushButton("Check for updates")
+        self.check_update_button.clicked.connect(self._check_for_update)
+
+        self.update_now_button = QPushButton("Update now")
+        self.update_now_button.setObjectName("Primary")
+        self.update_now_button.clicked.connect(self._start_update)
+        self.update_now_button.setVisible(False)
+
+        self.update_status = QLabel(
+            "" if updater_module.is_frozen()
+            else "Running from source -- checking works, but installing an update "
+            "only applies to the packaged app."
+        )
+        self.update_status.setObjectName("Hint")
+        self.update_status.setWordWrap(True)
+
+        self._pending_update: updater_module.UpdateInfo | None = None
+
+        return card(
+            section_label("Updates"),
+            row(self.version_label, spacer(), self.check_update_button, self.update_now_button),
+            self.update_status,
+        )
+
     # -- load / save ----------------------------------------------------
     def _load(self) -> None:
         s = self.settings
@@ -547,3 +578,77 @@ class SettingsPanel(QWidget):
         else:
             self.ai_claude_status.setText(f"Could not connect: {payload}")
             self.ai_claude_status.setStyleSheet(f"color: {theme.WARNING};")
+
+    # -- updates ----------------------------------------------------------
+    def _check_for_update(self) -> None:
+        self.check_update_button.setEnabled(False)
+        self.update_now_button.setVisible(False)
+        self._pending_update = None
+        self.update_status.setText("Checking for updates…")
+        self.update_status.setStyleSheet(f"color: {theme.TEXT_DIM};")
+
+        def work(context):
+            return updater_module.check_for_update()
+
+        job = self.jobs.submit_func("Checking for updates", work, category="general")
+        job.signals.finished.connect(self._on_update_checked)
+
+    def _on_update_checked(self, _job_id: str, state: str, payload) -> None:
+        self.check_update_button.setEnabled(True)
+        if state != "succeeded":
+            self.update_status.setText(f"Could not check for updates: {payload}")
+            self.update_status.setStyleSheet(f"color: {theme.WARNING};")
+            return
+
+        info = payload
+        if info is None:
+            self.update_status.setText(f"You're up to date ({__version__}).")
+            self.update_status.setStyleSheet(f"color: {theme.TEXT_FAINT};")
+            return
+
+        self._pending_update = info
+        self.update_status.setText(
+            f"Version {info.version} is available.{' ' + info.notes if info.notes else ''}"
+        )
+        self.update_status.setStyleSheet(f"color: {theme.LOSSLESS};")
+        self.update_now_button.setVisible(updater_module.is_frozen())
+
+    def _start_update(self) -> None:
+        info = self._pending_update
+        if info is None:
+            return
+        self.update_now_button.setEnabled(False)
+        self.check_update_button.setEnabled(False)
+        self.update_status.setText("Downloading update…")
+        self.update_status.setStyleSheet(f"color: {theme.TEXT_DIM};")
+
+        def work(context):
+            zip_path = updater_module.download_update(info, context=context)
+            updater_module.apply_update(zip_path)
+            return True
+
+        job = self.jobs.submit_func(f"Downloading update {info.version}", work, category="general")
+        job.signals.progress.connect(self._on_update_progress)
+        job.signals.finished.connect(self._on_update_applied)
+
+    def _on_update_progress(self, _job_id: str, fraction: object, message: str) -> None:
+        if message:
+            self.update_status.setText(message)
+
+    def _on_update_applied(self, _job_id: str, state: str, payload) -> None:
+        if state != "succeeded":
+            self.update_now_button.setEnabled(True)
+            self.check_update_button.setEnabled(True)
+            self.update_status.setText(f"Update failed: {payload}")
+            self.update_status.setStyleSheet(f"color: {theme.WARNING};")
+            return
+
+        self.update_status.setText("Update downloaded -- restarting to finish installing…")
+        self.update_status.setStyleSheet(f"color: {theme.LOSSLESS};")
+
+        from PySide6.QtCore import QTimer
+        from PySide6.QtWidgets import QApplication
+
+        # A helper process is already waiting for this one to exit -- give
+        # the status text a moment to actually paint before quitting.
+        QTimer.singleShot(800, QApplication.instance().quit)
