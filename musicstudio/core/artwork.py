@@ -314,7 +314,11 @@ def lookup_itunes(
 ) -> ArtworkCandidate | None:
     """Search the iTunes catalogue for album art."""
     settings = settings or get_settings()
-    term = " ".join(part for part in (artist, album or title) if part).strip()
+    # Title used to be dropped entirely whenever an album tag was present --
+    # searching by album alone can land on the wrong release (a compilation,
+    # a reissue, a "Greatest Hits") for a track whose own title would have
+    # pinned it down. Now it's always included alongside artist/album.
+    term = " ".join(part for part in (artist, title, album) if part).strip()
     if not term:
         return None
 
@@ -324,7 +328,10 @@ def lookup_itunes(
                 ITUNES_API,
                 params={
                     "term": term,
-                    "entity": "album" if album else "song",
+                    # "song" searches track names directly -- the more precise
+                    # match once a title is known -- and still returns each
+                    # track's own release artwork, so album art isn't lost.
+                    "entity": "song" if title else ("album" if album else "song"),
                     "limit": 5,
                     "media": "music",
                 },
@@ -358,21 +365,24 @@ def lookup_itunes(
             url=full_url,
             width=art.width,
             height=art.height,
-            score=_itunes_score(result, artist, album),
+            score=_itunes_score(result, artist, album, title),
             release_title=result.get("collectionName", ""),
             release_artist=result.get("artistName", ""),
         )
     return None
 
 
-def _itunes_score(result: dict, artist: str, album: str) -> float:
+def _itunes_score(result: dict, artist: str, album: str, title: str = "") -> float:
     """Rough confidence, since iTunes returns no match score of its own."""
     score = 0.5
     result_artist = (result.get("artistName") or "").lower()
     result_album = (result.get("collectionName") or "").lower()
+    result_title = (result.get("trackName") or "").lower()
     if artist and result_artist and artist.lower() in result_artist:
         score += 0.25
     if album and result_album and album.lower() in result_album:
+        score += 0.25
+    if title and result_title and title.lower() in result_title:
         score += 0.25
     return min(1.0, score)
 
