@@ -111,6 +111,11 @@ def isolated_settings(tmp_path, monkeypatch):
     monkeypatch.setattr(config, "CACHE_DIR", tmp_path / "cache")
     monkeypatch.setattr(config, "ARTWORK_CACHE_DIR", tmp_path / "cache" / "artwork")
     monkeypatch.setattr(config, "DB_PATH", tmp_path / "data" / "library.db")
+    # _SETTINGS_FILE is derived from CONFIG_DIR at import time, so patching
+    # CONFIG_DIR alone leaves it pointed at the real one -- Settings.save()
+    # would then create the patched CONFIG_DIR but write into the real,
+    # possibly-nonexistent one.
+    monkeypatch.setattr(config, "_SETTINGS_FILE", tmp_path / "config" / "settings.json")
     config.reset_settings_cache()
     yield
     config.reset_settings_cache()
