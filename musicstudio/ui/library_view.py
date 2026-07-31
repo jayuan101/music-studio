@@ -13,6 +13,7 @@ from PySide6.QtWidgets import (
     QHeaderView,
     QLabel,
     QLineEdit,
+    QMenu,
     QMessageBox,
     QPushButton,
     QTableView,
@@ -256,6 +257,8 @@ class LibraryPanel(QWidget):
         self.table.setShowGrid(False)
         self.table.doubleClicked.connect(self._on_double_click)
         self.table.selectionModel().selectionChanged.connect(self._on_selection_changed)
+        self.table.setContextMenuPolicy(Qt.CustomContextMenu)
+        self.table.customContextMenuRequested.connect(self._show_context_menu)
 
         header = self.table.horizontalHeader()
         header.setSectionResizeMode(0, QHeaderView.Fixed)
@@ -430,6 +433,55 @@ class LibraryPanel(QWidget):
         paths = self.selected_paths()
         if paths:
             self.edit_requested.emit(paths[0])
+
+    def _show_context_menu(self, position) -> None:
+        """Right-click: every per-song action in one place, since double-click
+        already means "play" and a single click just selects.
+
+        Right-clicking a row outside the current selection replaces it first
+        -- the usual file-manager convention -- so the menu always acts on
+        whatever it looks like it should. Right-clicking inside an existing
+        multi-selection leaves it alone, so batch actions (Delete, Convert,
+        Edit tags) still apply to the whole selection.
+        """
+        index = self.table.indexAt(position)
+        if not index.isValid():
+            return
+        if not self.table.selectionModel().isRowSelected(index.row(), index.parent()):
+            self.table.selectRow(index.row())
+
+        paths = self.selected_paths()
+        if not paths:
+            return
+
+        menu = QMenu(self)
+        play_action = menu.addAction("Play")
+        play_action.triggered.connect(lambda: self.play_requested.emit(self.all_paths(), index.row()))
+        menu.addSeparator()
+
+        edit_audio_action = menu.addAction("Edit audio…")
+        edit_audio_action.setEnabled(len(paths) == 1)
+        edit_audio_action.triggered.connect(self._emit_edit)
+
+        edit_tags_action = menu.addAction("Edit tags…")
+        edit_tags_action.triggered.connect(lambda: self.tags_requested.emit(paths))
+
+        convert_action = menu.addAction("Convert…")
+        convert_action.triggered.connect(lambda: self.convert_requested.emit(paths))
+
+        menu.addSeparator()
+        artwork_action = menu.addAction("Update artwork")
+        artwork_action.triggered.connect(lambda: self.artwork_requested.emit(paths))
+        fix_tags_action = menu.addAction("Fix metadata")
+        fix_tags_action.triggered.connect(lambda: self.tags_fix_requested.emit(paths))
+        ytmusic_action = menu.addAction("YouTube Music format…")
+        ytmusic_action.triggered.connect(lambda: self.ytmusic_format_requested.emit(paths))
+
+        menu.addSeparator()
+        delete_action = menu.addAction("Delete…")
+        delete_action.triggered.connect(self._delete_selected)
+
+        menu.exec(self.table.viewport().mapToGlobal(position))
 
     # -- import ---------------------------------------------------------
     def _choose_files(self) -> None:
