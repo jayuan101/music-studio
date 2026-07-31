@@ -197,10 +197,29 @@ def search(query: str, *, limit: int = 20) -> list[SearchResult]:
                 uploader=entry.get("uploader") or entry.get("channel") or "",
                 duration=float(entry.get("duration") or 0),
                 url=url,
-                thumbnail=entry.get("thumbnail") or "",
+                thumbnail=_best_thumbnail(entry),
             )
         )
     return results
+
+
+def _best_thumbnail(entry: dict) -> str:
+    """The highest-resolution thumbnail URL available for a search result.
+
+    Flat extraction (used by search() to stay fast) never populates the
+    singular "thumbnail" field -- only the "thumbnails" list, each with its
+    own width/height, in no guaranteed order. Picking explicitly by width
+    avoids relying on list order for something a future yt-dlp version could
+    change.
+    """
+    direct = entry.get("thumbnail")
+    if direct:
+        return direct
+    thumbnails = entry.get("thumbnails") or []
+    if not thumbnails:
+        return ""
+    best = max(thumbnails, key=lambda t: t.get("width") or 0)
+    return best.get("url", "")
 
 
 def inspect_url(url: str, *, playlist_limit: int = 0) -> UrlInfo:

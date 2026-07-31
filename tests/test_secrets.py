@@ -1,4 +1,9 @@
-"""Claude API key storage: OS credential store first, plaintext fallback."""
+"""Claude API key and Spotify Client Secret storage: OS credential store
+first, plaintext fallback. Both go through the same internal helpers, so the
+Claude tests above already exercise the shared edge cases (keyring errors,
+empty-string-deletes, no-backend fallback) -- the Spotify tests below just
+confirm its own wrapper functions plug into that shared machinery correctly,
+and that the two credentials never collide in storage."""
 
 from __future__ import annotations
 
@@ -184,3 +189,53 @@ def test_set_password_error_falls_back_to_plaintext(monkeypatch):
 
     assert not stored_in_keyring
     assert settings.ai_claude_api_key == "sk-ant-real-key"
+
+
+# ---------------------------------------------------------------------------
+# Spotify Client Secret -- same machinery, its own account/field
+# ---------------------------------------------------------------------------
+
+
+def test_spotify_secret_round_trips_through_the_keyring(monkeypatch, fake_store):
+    monkeypatch.setattr(secrets, "keyring_available", lambda: True)
+    settings = Settings()
+
+    stored_in_keyring = secrets.set_spotify_client_secret(settings, "spotify-secret-value")
+
+    assert stored_in_keyring
+    assert settings.spotify_client_secret == ""
+    assert secrets.get_spotify_client_secret(settings) == "spotify-secret-value"
+
+
+def test_spotify_secret_falls_back_to_plaintext_when_no_keyring(monkeypatch):
+    monkeypatch.setattr(secrets, "keyring_available", lambda: False)
+    settings = Settings()
+
+    stored_in_keyring = secrets.set_spotify_client_secret(settings, "spotify-secret-value")
+
+    assert not stored_in_keyring
+    assert settings.spotify_client_secret == "spotify-secret-value"
+    assert secrets.get_spotify_client_secret(settings) == "spotify-secret-value"
+
+
+def test_spotify_secret_delete_removes_from_both(monkeypatch, fake_store):
+    monkeypatch.setattr(secrets, "keyring_available", lambda: True)
+    settings = Settings()
+    secrets.set_spotify_client_secret(settings, "spotify-secret-value")
+
+    secrets.delete_spotify_client_secret(settings)
+
+    assert settings.spotify_client_secret == ""
+    assert secrets.get_spotify_client_secret(settings) == ""
+
+
+def test_claude_key_and_spotify_secret_do_not_collide(monkeypatch, fake_store):
+    """Both credentials can be stored at once without overwriting each other."""
+    monkeypatch.setattr(secrets, "keyring_available", lambda: True)
+    settings = Settings()
+
+    secrets.set_claude_api_key(settings, "sk-ant-real-key")
+    secrets.set_spotify_client_secret(settings, "spotify-secret-value")
+
+    assert secrets.get_claude_api_key(settings) == "sk-ant-real-key"
+    assert secrets.get_spotify_client_secret(settings) == "spotify-secret-value"

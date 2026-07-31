@@ -30,6 +30,7 @@ from ..core import artwork as artwork_module
 from ..core import assistant as assistant_module
 from ..core import organise
 from ..core import secrets
+from ..core import spotify as spotify_module
 from ..core import updater as updater_module
 from . import theme
 from .common import card, heading, row, section_label, spacer
@@ -158,7 +159,12 @@ class SettingsPanel(QWidget):
         self.artwork_enabled = QCheckBox("Look up cover art online")
         self.artwork_musicbrainz = QCheckBox("Use MusicBrainz / Cover Art Archive")
         self.artwork_itunes = QCheckBox("Use iTunes as a fallback")
-        for box in (self.artwork_enabled, self.artwork_musicbrainz, self.artwork_itunes):
+        self.artwork_youtube = QCheckBox("Use a YouTube video thumbnail as a last resort")
+        self.artwork_youtube.setToolTip(
+            "No credentials needed, but it's a video frame, not real album art -- "
+            "quality and accuracy vary. Tried only after everything else finds nothing."
+        )
+        for box in (self.artwork_enabled, self.artwork_musicbrainz, self.artwork_itunes, self.artwork_youtube):
             box.toggled.connect(self._save)
 
         self.artwork_min = QSpinBox()
@@ -198,9 +204,57 @@ class SettingsPanel(QWidget):
             self.artwork_enabled,
             self.artwork_musicbrainz,
             self.artwork_itunes,
+            self._build_spotify_section(),
+            self.artwork_youtube,
             form,
             row(spacer(), clear_cache),
         )
+
+    def _build_spotify_section(self) -> QWidget:
+        """Spotify's own sub-section: best cover art and catalogue of any
+        provider here, but the only one needing credentials."""
+        self.spotify_enabled = QCheckBox("Use Spotify (best match quality, needs a free API app)")
+        self.spotify_enabled.toggled.connect(self._on_spotify_enabled_toggled)
+
+        self.spotify_client_id = QLineEdit()
+        self.spotify_client_id.setPlaceholderText("Client ID")
+        self.spotify_client_id.editingFinished.connect(self._save)
+
+        self.spotify_client_secret = QLineEdit()
+        self.spotify_client_secret.setEchoMode(QLineEdit.Password)
+        self.spotify_client_secret.setPlaceholderText("Client Secret")
+        self.spotify_client_secret.editingFinished.connect(self._save_spotify_secret)
+
+        test_spotify = QPushButton("Test connection")
+        test_spotify.clicked.connect(self._test_spotify_connection)
+
+        self.spotify_status = QLabel(
+            "Get both free at developer.spotify.com/dashboard -- create an app, "
+            "no special access needed, just Client Credentials."
+        )
+        self.spotify_status.setObjectName("Hint")
+        self.spotify_status.setWordWrap(True)
+
+        self.spotify_key_storage_note = QLabel("")
+        self.spotify_key_storage_note.setObjectName("Hint")
+        self.spotify_key_storage_note.setWordWrap(True)
+
+        form = QWidget()
+        form_layout = QFormLayout(form)
+        form_layout.setContentsMargins(24, 4, 0, 4)
+        form_layout.setSpacing(8)
+        form_layout.addRow("Client ID", self.spotify_client_id)
+        form_layout.addRow("Client Secret", row(self.spotify_client_secret, test_spotify, spacing=8))
+
+        section = QWidget()
+        section_layout = QVBoxLayout(section)
+        section_layout.setContentsMargins(0, 0, 0, 0)
+        section_layout.setSpacing(6)
+        section_layout.addWidget(self.spotify_enabled)
+        section_layout.addWidget(form)
+        section_layout.addWidget(self.spotify_status)
+        section_layout.addWidget(self.spotify_key_storage_note)
+        return section
 
     def _build_editor_card(self) -> QWidget:
         self.limiter_ceiling = QDoubleSpinBox()
@@ -388,9 +442,16 @@ class SettingsPanel(QWidget):
         self.artwork_enabled.setChecked(s.artwork_enabled)
         self.artwork_musicbrainz.setChecked(s.artwork_use_musicbrainz)
         self.artwork_itunes.setChecked(s.artwork_use_itunes)
+        self.artwork_youtube.setChecked(s.artwork_use_youtube_thumbnail)
         self.artwork_min.setValue(s.artwork_min_size)
         self.artwork_preferred.setValue(s.artwork_preferred_size)
         self.user_agent.setText(s.musicbrainz_user_agent)
+
+        self.spotify_enabled.setChecked(s.spotify_enabled)
+        self.spotify_client_id.setText(s.spotify_client_id)
+        self.spotify_client_secret.setText(secrets.get_spotify_client_secret(s))
+        self.spotify_client_id.setEnabled(s.spotify_enabled)
+        self.spotify_client_secret.setEnabled(s.spotify_enabled)
 
         self.limiter_ceiling.setValue(s.limiter_ceiling_db)
         self.max_gain.setValue(s.max_gain_db)
@@ -415,6 +476,7 @@ class SettingsPanel(QWidget):
 
         self._update_hints()
         self._update_key_storage_note()
+        self._update_spotify_key_storage_note()
 
     def _save(self, *_) -> None:
         if self._loading:
@@ -433,9 +495,13 @@ class SettingsPanel(QWidget):
         s.artwork_enabled = self.artwork_enabled.isChecked()
         s.artwork_use_musicbrainz = self.artwork_musicbrainz.isChecked()
         s.artwork_use_itunes = self.artwork_itunes.isChecked()
+        s.artwork_use_youtube_thumbnail = self.artwork_youtube.isChecked()
         s.artwork_min_size = self.artwork_min.value()
         s.artwork_preferred_size = self.artwork_preferred.value()
         s.musicbrainz_user_agent = self.user_agent.text().strip() or s.musicbrainz_user_agent
+
+        s.spotify_enabled = self.spotify_enabled.isChecked()
+        s.spotify_client_id = self.spotify_client_id.text().strip()
 
         s.limiter_ceiling_db = self.limiter_ceiling.value()
         s.max_gain_db = self.max_gain.value()
@@ -590,6 +656,67 @@ class SettingsPanel(QWidget):
         else:
             self.ai_claude_status.setText(f"Could not connect: {payload}")
             self.ai_claude_status.setStyleSheet(f"color: {theme.WARNING};")
+
+    # -- Spotify ------------------------------------------------------------
+    def _on_spotify_enabled_toggled(self, checked: bool) -> None:
+        self.spotify_client_id.setEnabled(checked)
+        self.spotify_client_secret.setEnabled(checked)
+        self._save()
+
+    def _save_spotify_secret(self) -> None:
+        if self._loading:
+            return
+        stored_in_keyring = secrets.set_spotify_client_secret(
+            self.settings, self.spotify_client_secret.text().strip()
+        )
+        spotify_module.clear_token_cache()
+        self._update_spotify_key_storage_note(stored_in_keyring)
+        self.status_label.setText("Saved")
+        self.status_label.setStyleSheet(f"color: {theme.TEXT_FAINT};")
+        self.settings_changed.emit()
+
+    def _update_spotify_key_storage_note(self, stored_in_keyring: bool | None = None) -> None:
+        if stored_in_keyring is None:
+            stored_in_keyring = secrets.keyring_available()
+        self.spotify_key_storage_note.setText(
+            "The secret is stored in your OS credential store."
+            if stored_in_keyring
+            else "⚠ No OS credential store is available -- the secret is saved in plain "
+            "text in settings.json."
+        )
+        self.spotify_key_storage_note.setStyleSheet(
+            f"color: {theme.TEXT_FAINT if stored_in_keyring else theme.WARNING};"
+        )
+
+    def _test_spotify_connection(self) -> None:
+        self._save()  # the Client ID field only saves on editingFinished/blur
+        if not spotify_module.is_configured(self.settings):
+            self.spotify_status.setText(
+                "Enter both a Client ID and Client Secret first, and check the box above."
+            )
+            self.spotify_status.setStyleSheet(f"color: {theme.WARNING};")
+            return
+
+        self.spotify_status.setText("Checking…")
+        self.spotify_status.setStyleSheet(f"color: {theme.TEXT_DIM};")
+
+        def work(context):
+            spotify_module.clear_token_cache()
+            token = spotify_module._get_token(self.settings)
+            if token is None:
+                raise RuntimeError("Could not authenticate -- check the Client ID and Secret")
+            return True
+
+        job = self.jobs.submit_func("Testing Spotify connection", work, category="artwork")
+        job.signals.finished.connect(self._on_spotify_tested)
+
+    def _on_spotify_tested(self, _job_id: str, state: str, payload) -> None:
+        if state == "succeeded":
+            self.spotify_status.setText("Connected.")
+            self.spotify_status.setStyleSheet(f"color: {theme.LOSSLESS};")
+        else:
+            self.spotify_status.setText(f"Could not connect: {payload}")
+            self.spotify_status.setStyleSheet(f"color: {theme.WARNING};")
 
     # -- updates ----------------------------------------------------------
     def _check_for_update(self) -> None:

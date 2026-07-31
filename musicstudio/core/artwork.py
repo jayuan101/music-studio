@@ -388,6 +388,108 @@ def _itunes_score(result: dict, artist: str, album: str, title: str = "") -> flo
 
 
 # ---------------------------------------------------------------------------
+# Spotify
+# ---------------------------------------------------------------------------
+
+
+def lookup_spotify(
+    artist: str,
+    album: str,
+    size: int = 1200,
+    *,
+    settings: Settings | None = None,
+    title: str = "",
+) -> ArtworkCandidate | None:
+    """Search Spotify's catalogue for cover art.
+
+    Needs credentials (see musicstudio.core.spotify); with none configured
+    this returns None immediately, same as any other provider with nothing
+    to offer, so it falls through to the next one without special-casing.
+    """
+    from . import spotify as spotify_module
+
+    settings = settings or get_settings()
+    match = spotify_module.find_track(artist, title, album, settings=settings)
+    if match is None or not match.image_url:
+        return None
+
+    data = spotify_module.fetch_image(match.image_url)
+    if not data or len(data) < MIN_USABLE_BYTES:
+        return None
+
+    art = Artwork.from_bytes(data)
+    return ArtworkCandidate(
+        data=data,
+        source="Spotify",
+        url=match.image_url,
+        width=art.width,
+        height=art.height,
+        # Spotify ranks its own results; a hit is a hit, so this sits just
+        # under MusicBrainz's exact-release match but above iTunes' heuristic.
+        score=0.85,
+        release_title=match.album,
+        release_artist=match.artist,
+    )
+
+
+# ---------------------------------------------------------------------------
+# YouTube (last resort: a video thumbnail, not real cover art)
+# ---------------------------------------------------------------------------
+
+
+def lookup_youtube_thumbnail(
+    artist: str,
+    album: str,
+    *,
+    settings: Settings | None = None,
+    title: str = "",
+) -> ArtworkCandidate | None:
+    """Fall back to a YouTube video thumbnail when no real cover art exists.
+
+    Needs no credentials -- it reuses the same yt-dlp search the Download
+    page's search box uses. Deliberately the last provider tried and the
+    lowest-scored: a video thumbnail is often a lyric-video screenshot or a
+    channel's static cover slate, not the actual album art.
+    """
+    from . import download as download_module
+
+    settings = settings or get_settings()
+    query = " ".join(part for part in (artist, title or album) if part).strip()
+    if not query:
+        return None
+
+    try:
+        results = download_module.search(query, limit=1)
+    except download_module.DownloadError:
+        return None
+    if not results or not results[0].thumbnail:
+        return None
+
+    result = results[0]
+    try:
+        with _client(settings, timeout=15.0) as client:
+            response = client.get(result.thumbnail)
+            response.raise_for_status()
+            data = response.content
+    except httpx.HTTPError:
+        return None
+    if len(data) < MIN_USABLE_BYTES:
+        return None
+
+    art = Artwork.from_bytes(data)
+    return ArtworkCandidate(
+        data=data,
+        source="YouTube thumbnail",
+        url=result.thumbnail,
+        width=art.width,
+        height=art.height,
+        score=0.3,
+        release_title=result.title,
+        release_artist=result.uploader,
+    )
+
+
+# ---------------------------------------------------------------------------
 # Combined lookup
 # ---------------------------------------------------------------------------
 
@@ -428,6 +530,10 @@ def find_artwork(
         candidate = lookup_musicbrainz(artist, album, size, settings=settings)
     if candidate is None and settings.artwork_use_itunes:
         candidate = lookup_itunes(artist, album, size, settings=settings, title=title)
+    if candidate is None and settings.spotify_enabled:
+        candidate = lookup_spotify(artist, album, size, settings=settings, title=title)
+    if candidate is None and settings.artwork_use_youtube_thumbnail:
+        candidate = lookup_youtube_thumbnail(artist, album, settings=settings, title=title)
 
     if use_cache:
         write_cache(cache_artist, cache_album, size, candidate.data if candidate else None)
@@ -457,6 +563,14 @@ def find_all_candidates(
             candidates.append(found)
     if settings.artwork_use_itunes:
         found = lookup_itunes(artist, album, size, settings=settings, title=title)
+        if found:
+            candidates.append(found)
+    if settings.spotify_enabled:
+        found = lookup_spotify(artist, album, size, settings=settings, title=title)
+        if found:
+            candidates.append(found)
+    if settings.artwork_use_youtube_thumbnail:
+        found = lookup_youtube_thumbnail(artist, album, settings=settings, title=title)
         if found:
             candidates.append(found)
 

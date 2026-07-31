@@ -76,6 +76,21 @@ class Settings:
     musicbrainz_user_agent: str = (
         "MusicStudio/1.0 (https://github.com/jayuan101/transcript-agent-releases)"
     )
+    #: Tried after MusicBrainz/iTunes come back empty (for both artwork and,
+    #: in core/tag_fix.py, metadata) -- best catalogue and cover-art quality
+    #: of any provider here, but needs credentials (see spotify_client_id
+    #: below), unlike the two free/keyless ones above. One flag governs both
+    #: uses, the same as iTunes/MusicBrainz aren't separately toggled per use.
+    spotify_enabled: bool = False
+    spotify_client_id: str = ""
+    #: Fallback storage for the Client Secret when core.secrets can't use the
+    #: OS credential store -- same arrangement as ai_claude_api_key below;
+    #: never read this directly, go through core.secrets.get_spotify_client_secret().
+    spotify_client_secret: str = ""
+    #: Last resort: a YouTube video thumbnail, when nothing else has real
+    #: cover art. No credentials needed, but it is a video frame, not an
+    #: album cover, so quality and accuracy vary.
+    artwork_use_youtube_thumbnail: bool = True
 
     # -- Download -------------------------------------------------------
     #: "keep" downloads the best original stream untouched (no re-encode).

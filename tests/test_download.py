@@ -196,3 +196,63 @@ def test_url_info_duration_label():
     assert UrlInfo(title="x", duration=95).duration_label == "1:35"
     assert UrlInfo(title="x", duration=3725).duration_label == "1:02:05"
     assert UrlInfo(title="x", duration=0).duration_label == ""
+
+
+# ---------------------------------------------------------------------------
+# _best_thumbnail
+#
+# A real bug: flat search extraction (used by search(), to stay fast over a
+# whole results page) never populates yt-dlp's singular "thumbnail" field --
+# only the "thumbnails" list, each with its own width, in no guaranteed
+# order. Found live while wiring the YouTube-thumbnail artwork fallback up
+# to a real search, where it silently returned no thumbnail for every result.
+# ---------------------------------------------------------------------------
+
+
+def test_prefers_the_direct_thumbnail_field_when_present():
+    entry = {
+        "thumbnail": "https://i.ytimg.com/vi/abc/direct.jpg",
+        "thumbnails": [{"url": "https://i.ytimg.com/vi/abc/small.jpg", "width": 120}],
+    }
+    assert download._best_thumbnail(entry) == "https://i.ytimg.com/vi/abc/direct.jpg"
+
+
+def test_falls_back_to_the_widest_entry_in_the_thumbnails_list():
+    entry = {
+        "thumbnails": [
+            {"url": "https://i.ytimg.com/vi/abc/medium.jpg", "width": 360},
+            {"url": "https://i.ytimg.com/vi/abc/large.jpg", "width": 720},
+            {"url": "https://i.ytimg.com/vi/abc/small.jpg", "width": 120},
+        ]
+    }
+    assert download._best_thumbnail(entry) == "https://i.ytimg.com/vi/abc/large.jpg"
+
+
+def test_widest_entry_wins_regardless_of_list_order():
+    entry = {
+        "thumbnails": [
+            {"url": "https://i.ytimg.com/vi/abc/large.jpg", "width": 720},
+            {"url": "https://i.ytimg.com/vi/abc/small.jpg", "width": 120},
+        ]
+    }
+    assert download._best_thumbnail(entry) == "https://i.ytimg.com/vi/abc/large.jpg"
+
+
+def test_empty_when_neither_field_is_present():
+    assert download._best_thumbnail({}) == ""
+
+
+def test_empty_thumbnails_list_is_handled():
+    assert download._best_thumbnail({"thumbnails": []}) == ""
+
+
+def test_a_thumbnail_entry_missing_width_does_not_crash():
+    """A malformed entry (no width key at all) must not blow up the max()
+    comparison -- it should just lose to anything with a real width."""
+    entry = {
+        "thumbnails": [
+            {"url": "https://i.ytimg.com/vi/abc/no-width.jpg"},
+            {"url": "https://i.ytimg.com/vi/abc/large.jpg", "width": 720},
+        ]
+    }
+    assert download._best_thumbnail(entry) == "https://i.ytimg.com/vi/abc/large.jpg"

@@ -11,8 +11,9 @@ import time
 import httpx
 import pytest
 
-from musicstudio.config import get_settings
+from musicstudio.config import Settings, get_settings
 from musicstudio.core import artwork
+from musicstudio.core import spotify as spotify_module
 from musicstudio.core import tags as T
 
 
@@ -138,6 +139,86 @@ def test_itunes_query_includes_title_alongside_album(monkeypatch, cover_png):
     assert "Skyline Drift" in search_params["term"]
     assert "Neon Cartography" in search_params["term"]
     assert search_params["entity"] == "song"
+
+
+def test_falls_back_to_spotify_when_musicbrainz_and_itunes_have_no_art(monkeypatch, cover_png):
+    install_client(monkeypatch, {
+        "musicbrainz.org": MB_EMPTY,
+        "itunes.apple.com/search": FakeResponse(json_data={"results": []}),
+    })
+    monkeypatch.setattr(
+        spotify_module,
+        "find_track",
+        lambda *a, **k: spotify_module.SpotifyMatch(
+            title="Cheques", artist="Shubh", album="Still Rollin", year="2023",
+            image_url="https://i.scdn.co/image/big.jpg",
+        ),
+    )
+    monkeypatch.setattr(spotify_module, "fetch_image", lambda url: cover_png)
+
+    found = artwork.find_artwork(
+        "Shubh", "Still Rollin", title="Cheques", use_cache=False,
+        settings=Settings(spotify_enabled=True, spotify_client_id="id", spotify_client_secret="secret"),
+    )
+
+    assert found is not None
+    assert found.source == "Spotify"
+    assert found.data == cover_png
+    assert found.release_artist == "Shubh"
+
+
+def test_falls_back_to_youtube_thumbnail_as_last_resort(monkeypatch, cover_png):
+    from musicstudio.core import download as download_module
+
+    install_client(monkeypatch, {
+        "musicbrainz.org": MB_EMPTY,
+        "itunes.apple.com/search": FakeResponse(json_data={"results": []}),
+        "i.ytimg.com": FakeResponse(content=cover_png),
+    })
+    monkeypatch.setattr(spotify_module, "find_track", lambda *a, **k: None)
+    monkeypatch.setattr(
+        download_module,
+        "search",
+        lambda query, **k: [
+            download_module.SearchResult(
+                title="Some Video", uploader="Some Channel",
+                url="https://youtube.com/watch?v=abc",
+                thumbnail="https://i.ytimg.com/vi/abc/hq.jpg",
+            )
+        ],
+    )
+
+    found = artwork.find_artwork(
+        "Some Artist", "", title="Some Song", use_cache=False,
+        settings=Settings(artwork_use_youtube_thumbnail=True),
+    )
+
+    assert found is not None
+    assert found.source == "YouTube thumbnail"
+    assert found.data == cover_png
+    assert found.score < 0.5, "must rank below every real cover-art provider"
+
+
+def test_youtube_thumbnail_disabled_by_default_setting_is_skipped(monkeypatch, cover_png):
+    from musicstudio.core import download as download_module
+
+    install_client(monkeypatch, {
+        "musicbrainz.org": MB_EMPTY,
+        "itunes.apple.com/search": FakeResponse(json_data={"results": []}),
+    })
+    monkeypatch.setattr(spotify_module, "find_track", lambda *a, **k: None)
+    search_calls = []
+    monkeypatch.setattr(
+        download_module, "search", lambda query, **k: search_calls.append(query) or []
+    )
+
+    found = artwork.find_artwork(
+        "Some Artist", "", title="Some Song", use_cache=False,
+        settings=Settings(artwork_use_youtube_thumbnail=False),
+    )
+
+    assert found is None
+    assert not search_calls, "YouTube must not even be queried when the setting is off"
 
 
 def test_itunes_score_rewards_a_matching_title():
