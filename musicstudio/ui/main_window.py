@@ -182,6 +182,7 @@ class MainWindow(QMainWindow):
         self.library_panel.tags_fix_requested.connect(self._fix_library_tags)
         self.library_panel.ytmusic_format_requested.connect(self._format_for_ytmusic)
         self.library_panel.play_requested.connect(self.now_playing_bar.play_queue)
+        self.library_panel.selection_changed.connect(self._preload_editor)
         self.download_panel.preview_ready.connect(
             lambda path: self.now_playing_bar.play_queue([path], 0)
         )
@@ -220,6 +221,25 @@ class MainWindow(QMainWindow):
     def _go_edit(self, path: Path) -> None:
         self.editor_panel.load(Path(path))
         self.go_to("Edit")
+
+    def _preload_editor(self, paths: list[Path]) -> None:
+        """Keep the Editor loaded with whatever was last selected in the
+        Library, so switching to Edit already has something there instead
+        of showing "No file loaded" -- without forcing navigation there on
+        every click, which is what "Edit tags" auto-navigating used to do
+        and was removed for fighting with normal browsing/selecting.
+
+        Deliberately does nothing for zero or multiple selected paths: with
+        none selected there is nothing to load, and with several selected
+        (building a multi-select for a batch action) it is not obvious
+        which one the Editor should show, so whatever it already has stays.
+        """
+        if len(paths) != 1:
+            return
+        path = Path(paths[0])
+        if path == self.editor_panel.current_path:
+            return
+        self.editor_panel.load(path)
 
     def _go_tags(self, paths: list[Path]) -> None:
         self.tag_panel.set_files(paths)

@@ -376,6 +376,11 @@ class EditorPanel(QWidget):
         return _scrollable(page)
 
     # -- loading --------------------------------------------------------
+    @property
+    def current_path(self) -> Path | None:
+        """The file currently loaded in the editor, if any."""
+        return self._path
+
     def _choose_file(self) -> None:
         path, _ = QFileDialog.getOpenFileName(
             self, "Open an audio file", "", "Audio files (*);;All files (*)"
