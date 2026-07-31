@@ -110,17 +110,33 @@ def _musicbrainz_tags(artist: str, album: str, settings: Settings) -> TagSet | N
     )
 
 
+def _spotify_tags(artist: str, title: str, album: str, settings: Settings) -> TagSet | None:
+    from . import spotify as spotify_module
+
+    match = spotify_module.find_track(artist, title, album, settings=settings)
+    if match is None:
+        return None
+    # No genre here: Spotify puts genre on the *artist*, not the track, which
+    # would mean a second API call per lookup -- not worth it when iTunes
+    # already covers genre whenever it has a hit at all.
+    return TagSet(title=match.title, artist=match.artist, album=match.album, date=match.year)
+
+
 def guess_from_online(tags: TagSet, *, settings: Settings | None = None) -> TagSet:
     """Fill in album/year/genre (and title/artist if still blank) online.
 
-    Tries iTunes first -- it answers with genre and year in the same call --
-    and falls back to MusicBrainz only if iTunes has nothing.
+    Tries iTunes first -- it answers with genre and year in the same call.
+    Spotify is next: better catalogue coverage than iTunes for a lot of
+    non-mainstream music, but needs credentials and has no genre field.
+    MusicBrainz is the last resort, release-only fallback.
     """
     settings = settings or get_settings()
     if not tags.artist and not tags.title and not tags.album:
         return TagSet()
 
     guess = _itunes_tags(tags.artist, tags.title, tags.album, settings)
+    if guess is None or guess.is_empty():
+        guess = _spotify_tags(tags.artist, tags.title, tags.album, settings)
     if guess is None or guess.is_empty():
         guess = _musicbrainz_tags(tags.artist, tags.album, settings)
     return guess or TagSet()
