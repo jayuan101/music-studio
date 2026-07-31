@@ -3,19 +3,29 @@
 A Windows desktop app for getting music in, getting it right, and getting it
 out in whatever format you need — at the best quality the source allows.
 
-- **Play** anything in the library, with a waveform playhead and the ability to
-  hear your edits before you commit to them.
+- **Play** anything in the library from a persistent transport bar — double-click
+  a song to play it and queue everything else currently visible, with
+  shuffle, repeat and a waveform playhead.
+- **Search** YouTube directly from the Download page, and play a result the
+  moment it downloads, to decide whether you actually want it.
 - **Import** anything ffmpeg can decode (which is essentially everything).
 - **Download** from YouTube or any of the 1700+ sites yt-dlp supports.
 - **Convert** to FLAC, ALAC, WAV, AIFF, WavPack, MP3, AAC, Opus, Vorbis or WMA.
 - **Edit** — trim, cut, boost volume well past the normal ceiling, normalise,
-  fade, change speed and pitch, equalise, strip silence, remap channels.
+  fade, change speed and pitch, equalise, strip silence, remap channels —
+  then either **Export** to a new file or **Save** the edits into the library
+  file itself.
 - **Tag** every field, across every container, with cover art fetched
-  automatically from MusicBrainz and iTunes.
+  automatically from MusicBrainz, iTunes, Spotify and (as a last resort) a
+  YouTube thumbnail. **Fix metadata** fills in whatever is missing from the
+  filename and an online lookup; **YouTube Music format** goes further and
+  reshapes tags to match YouTube Music's own conventions.
 - **Ask** — a Personal AI assistant that can search, convert, edit, tag, or
   download for you in plain language. Runs on a local Ollama model with no
   network or API key by default; a Preferences toggle escalates specific
   commands to Claude when you want the extra capability.
+- **Update itself** — checks GitHub for a newer release and installs it in
+  place, from inside the app.
 
 ---
 
@@ -60,27 +70,55 @@ unlimited headroom and only the final encode quantises.
 
 ---
 
-## Listening before you commit
+## Two players, on purpose
 
-The editor has a transport bar: play/pause (or the spacebar), stop, a scrubber,
-and a volume slider. Click anywhere on the waveform to seek there; select a
-region and **Play selection** plays just that span.
+A persistent transport bar sits at the bottom of every page — double-click a
+song anywhere in the Library and it plays, queuing every track currently
+visible (respecting your search and sort), with previous/next, shuffle
+(reorders only what's *ahead* of the current track, so turning it on
+mid-album never replays what you just heard) and repeat (off, queue, or one
+track).
 
-**Preview with effects** is the one that matters. It renders a short excerpt
-with your whole effect stack applied — gain, limiter, normalisation, EQ, tempo,
-the lot — and plays that, so what you hear is what you would export. Renders
-are debounced, so dragging a slider does not queue up a hundred of them.
+The Editor has its own, separate, transport: play/pause (or the spacebar),
+stop, a scrubber, a volume slider. Click anywhere on the waveform to seek
+there; select a region and **Play selection** plays just that span.
+**Preview with effects** is the one that matters — it renders a short excerpt
+with your whole effect stack applied (gain, limiter, normalisation, EQ,
+tempo, the lot) and plays that, so what you hear is what you would export.
+Renders are debounced, so dragging a slider does not queue up a hundred of
+them.
+
+These are two independent playback engines rather than one shared player,
+because previewing an edit and casually listening are different things you
+might want to do at the same time in different tabs — starting one simply
+pauses the other, so you never get two tracks fighting over the speakers.
+
+When the edits are right, **Export** writes a new file, or **Save** applies
+them straight to the file already in your library — encoded to a hidden
+temp file first and swapped in atomically, so nothing at the real path
+changes unless every step succeeds.
 
 ---
 
-## Cover art
+## Cover art and metadata
 
-Artwork is looked up from two sources, neither needing an API key or signup:
+Four providers are tried in order, each one a fallback for when the last
+found nothing:
 
 1. **MusicBrainz → Cover Art Archive** — matches a specific release, so it is
    the most accurate. Rate-limited to 1 request/second as their rules require.
-2. **iTunes Search API** — the fallback, and reliably high resolution: the
-   100×100 thumbnail URL it returns is rewritten to fetch up to 1200×1200.
+   No API key or signup.
+2. **iTunes Search API** — broad and reliably high resolution: the 100×100
+   thumbnail URL it returns is rewritten to fetch up to 1200×1200. No API key
+   or signup.
+3. **Spotify** — the best catalogue and cover-art match of the four, but the
+   only one needing credentials: a free developer app's Client ID and Secret
+   (Client Credentials flow — app-level access, no user login) from
+   [developer.spotify.com/dashboard](https://developer.spotify.com/dashboard),
+   entered in Preferences.
+4. **YouTube thumbnail** — last resort, and scored accordingly: no
+   credentials needed, but it is a video frame, not real album art, so
+   quality and accuracy vary.
 
 When more than one provider answers, a picker shows each candidate with its
 source, resolution and match score rather than silently taking the first.
@@ -90,6 +128,30 @@ optionally replaces embedded images below a resolution you set — which is what
 "keep artwork up to date" means for a library full of decade-old 200px
 thumbnails. Hits *and* misses are cached, so repeat scans are fast and stay
 polite to free services. You can always drag in your own image instead.
+
+**Fix metadata** does the same fallback search for text fields — title,
+artist, album, year, genre — filling in only what is blank; an existing
+value, however wrong, is never touched. Filenames are tried first (`Artist -
+Title.ext`), then the same online chain above.
+
+**YouTube Music format** is a deliberate step further, for a library built
+from downloads: it *overwrites* fields, not just fills them, to match what
+YouTube Music expects — album artist filled in on every track (the field it
+groups an uploaded library by), guests moved out of the artist field and
+into the title as `(feat. X)`, `(Official Video)`-style noise stripped from
+titles, and duplicate genre spellings folded together. Current tags are
+snapshotted first, so a run can be undone.
+
+---
+
+## Finding something new
+
+The Download page has a search box alongside the usual paste-a-link field —
+it searches YouTube directly (yt-dlp's own search, no separate API or
+account). Double-click a result, or hit **Download & play**, and it downloads
+through the same pipeline as any other link and starts playing the moment
+it's done, so you can hear it before deciding whether to keep it. If not,
+delete it from the Library like anything else.
 
 ---
 
@@ -114,8 +176,10 @@ the tagging and artwork pipeline.
 
 Everything has a default you can change, and changes save immediately:
 output folder, filename template, whether to preserve source rate and depth,
-artwork providers and minimum resolution, the limiter ceiling, how far the gain
-slider reaches, and the default download mode.
+which artwork providers to use (including Spotify credentials, stored in the
+OS credential store when one is available) and minimum resolution, the
+limiter ceiling, how far the gain slider reaches, the default download mode,
+and whether new downloads are formatted for YouTube Music automatically.
 
 Turning *off* "keep the source sample rate / bit depth" normalises everything
 down to CD quality (44.1 kHz / 16-bit) — useful for shrinking a hi-res library
@@ -137,6 +201,16 @@ never reorganises music already on your disk.
 
 Download `MusicStudio-Windows-*.zip`, unzip it anywhere, run `MusicStudio.exe`.
 ffmpeg is bundled — there is nothing else to install.
+
+### Staying up to date
+
+Preferences → Updates shows the installed version, with a **Check for
+updates** button. It reads this repository's public GitHub Releases — no
+account needed — and if a newer one exists, **Update now** downloads it and
+installs it in place: a detached helper waits for the app to close, mirrors
+the new build over the old one, and relaunches it. Only meaningful for a
+release build; running from source, checking still works but there is
+nothing to install in place.
 
 ### From source
 
@@ -168,9 +242,13 @@ downloads ffmpeg itself.
 python -m pytest tests -q
 ```
 
-251 tests covering the filter-graph builder, the quality policy, real encodes
+382 tests covering the filter-graph builder, the quality policy, real encodes
 into all ten output formats, tag round-trips through every container, the
-artwork provider chain (against mocked HTTP), filename templating and path
+four-provider artwork/metadata fallback chain (against mocked HTTP), the
+YouTube Music tag normaliser (including the real edge cases it was built to
+fix — a feature credit swallowing the song name, a single mistaken for a
+video title, a mixtape mistaken for a compilation), the playback queue
+(shuffle, repeat, running off either end), filename templating and path
 safety, settings persistence, and the library index. Tests that need audio
 generate it with ffmpeg rather than committing binary fixtures.
 
@@ -187,12 +265,19 @@ musicstudio/
 │   ├── convert.py    quality policy + single-pass command builder
 │   ├── edit.py       the filter-graph builder
 │   ├── tags.py       one TagSet over ID3 / Vorbis / MP4 / APEv2 / ASF
-│   ├── artwork.py    MusicBrainz, Cover Art Archive, iTunes
-│   ├── download.py   yt-dlp wrapper
+│   ├── artwork.py    MusicBrainz, Cover Art Archive, iTunes, Spotify, YouTube
+│   ├── spotify.py    Client Credentials auth + track search
+│   ├── tag_fix.py    fills blank tags from the filename, then online
+│   ├── ytmusic.py    reshapes tags to YouTube Music's conventions
+│   ├── download.py   yt-dlp wrapper, plus search()
 │   ├── organise.py   filename templating, with Windows path safety
+│   ├── updater.py    checks GitHub releases, installs in place
+│   ├── secrets.py    OS credential store for the Claude key and Spotify secret
 │   └── jobs.py       background queue with progress and cancel
 ├── db.py             SQLite library index
-└── ui/               PySide6 panels, waveform, player, activity dock
+└── ui/
+    ├── widgets/now_playing.py   the persistent player and its queue
+    └── ...                      panels, waveform, editor transport, activity dock
 ```
 
 `core/` has no dependency on Qt, so the whole engine is testable headlessly.
