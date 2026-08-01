@@ -133,6 +133,16 @@ class UrlInfo:
         return f"{hours}:{minutes:02d}:{seconds:02d}" if hours else f"{minutes}:{seconds:02d}"
 
 
+#: Sources this app can search, mapped to yt-dlp's search-prefix name. Each
+#: one resolves "prefixN:query" against a specific site's own search, no API
+#: key or login needed -- the same reason the rest of this module leans on
+#: yt-dlp instead of a site-specific SDK per source.
+SEARCH_SOURCES: dict[str, str] = {
+    "YouTube": "ytsearch",
+    "SoundCloud": "scsearch",
+}
+
+
 @dataclass
 class SearchResult:
     """One hit from :func:`search`, light enough to list dozens at once."""
@@ -142,6 +152,9 @@ class SearchResult:
     duration: float = 0.0
     url: str = ""
     thumbnail: str = ""
+    #: Which source this came from, e.g. "YouTube" or "SoundCloud" -- shown
+    #: in the results list so a search spanning several sites stays legible.
+    source: str = ""
 
     @property
     def duration_label(self) -> str:
@@ -152,21 +165,46 @@ class SearchResult:
         return f"{hours}:{minutes:02d}:{seconds:02d}" if hours else f"{minutes}:{seconds:02d}"
 
 
-def search(query: str, *, limit: int = 20) -> list[SearchResult]:
-    """Search YouTube for ``query`` without downloading anything.
+def search(
+    query: str, *, limit: int = 20, sources: list[str] | None = None
+) -> list[SearchResult]:
+    """Search every source in :data:`SEARCH_SOURCES` for ``query``.
 
-    yt-dlp's own search extractors (``ytsearchN:query``) are what make this
-    possible without a separate API key or account -- the same reason the
-    rest of this module leans on yt-dlp instead of a site-specific SDK. Flat
-    extraction keeps this fast: it reads the results page rather than
-    resolving every video's full format list up front, which a search over
-    20 results would otherwise pay for one at a time.
+    "Search all sites" only means something if one flaky source can't take
+    the others down with it: each source is queried independently, and a
+    source that errors (a network hiccup, an extractor that broke) is
+    dropped rather than failing the whole search, as long as at least one
+    source still comes back with something.
     """
-    import yt_dlp
-
     query = query.strip()
     if not query:
         return []
+
+    chosen = list(sources) if sources is not None else list(SEARCH_SOURCES)
+    results: list[SearchResult] = []
+    errors: list[str] = []
+    for source in chosen:
+        prefix = SEARCH_SOURCES.get(source)
+        if prefix is None:
+            continue
+        try:
+            results.extend(_search_source(source, prefix, query, limit))
+        except DownloadError as exc:
+            errors.append(f"{source}: {exc}")
+
+    if not results and errors:
+        raise DownloadError("; ".join(errors))
+    return results
+
+
+def _search_source(source: str, prefix: str, query: str, limit: int) -> list[SearchResult]:
+    """Run one source's ``prefixN:query`` search via yt-dlp's flat extraction.
+
+    Flat extraction keeps this fast: it reads the results page rather than
+    resolving every hit's full format list up front, which a search over 20
+    results would otherwise pay for one at a time.
+    """
+    import yt_dlp
 
     options = {
         "quiet": True,
@@ -176,7 +214,7 @@ def search(query: str, *, limit: int = 20) -> list[SearchResult]:
     }
     try:
         with yt_dlp.YoutubeDL(options) as ydl:
-            info = ydl.extract_info(f"ytsearch{max(1, limit)}:{query}", download=False)
+            info = ydl.extract_info(f"{prefix}{max(1, limit)}:{query}", download=False)
     except Exception as exc:
         raise DownloadError(f"Search failed: {exc}") from exc
 
@@ -184,11 +222,9 @@ def search(query: str, *, limit: int = 20) -> list[SearchResult]:
     results = []
     for entry in entries:
         video_id = entry.get("id")
-        url = (
-            entry.get("webpage_url")
-            or entry.get("url")
-            or (f"https://www.youtube.com/watch?v={video_id}" if video_id else "")
-        )
+        url = entry.get("webpage_url") or entry.get("url") or ""
+        if not url and video_id and prefix == "ytsearch":
+            url = f"https://www.youtube.com/watch?v={video_id}"
         if not url:
             continue
         results.append(
@@ -198,6 +234,7 @@ def search(query: str, *, limit: int = 20) -> list[SearchResult]:
                 duration=float(entry.get("duration") or 0),
                 url=url,
                 thumbnail=_best_thumbnail(entry),
+                source=source,
             )
         )
     return results

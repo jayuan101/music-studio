@@ -61,7 +61,9 @@ class DownloadPanel(QWidget):
 
         # -- Search -------------------------------------------------------
         self.search_input = QLineEdit()
-        self.search_input.setPlaceholderText("Search YouTube for a song, artist or album…")
+        self.search_input.setPlaceholderText(
+            "Search YouTube and SoundCloud for a song, artist or album…"
+        )
         self.search_input.returnPressed.connect(self._search)
 
         self.search_button = QPushButton("Search")
@@ -251,7 +253,9 @@ class DownloadPanel(QWidget):
         self.search_status.setText(f"{len(results)} result(s) — double-click one to play it")
         self.search_status.setStyleSheet(f"color: {theme.TEXT_DIM};")
         for result in results:
-            detail = " · ".join(part for part in (result.uploader, result.duration_label) if part)
+            detail = " · ".join(
+                part for part in (result.source, result.uploader, result.duration_label) if part
+            )
             item = QListWidgetItem(f"{result.title}" + (f"  —  {detail}" if detail else ""))
             item.setData(Qt.UserRole, result)
             self.results_list.addItem(item)
