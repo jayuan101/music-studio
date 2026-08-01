@@ -342,3 +342,76 @@ def test_artwork_presence_is_indexed(library, music_folder, cover_png):
     row = library.get(target)
     assert row.has_artwork
     assert row.artwork_width == 240
+
+
+# ---------------------------------------------------------------------------
+# find_duplicates()
+#
+# The common case this app can itself create: the same song downloaded
+# twice, or converted to a new format alongside the original. Grouped by
+# normalized (artist, title) rather than file content, so these do not need
+# ffmpeg-decoded audio comparison -- just matching tags.
+# ---------------------------------------------------------------------------
+
+
+def test_find_duplicates_groups_matching_artist_and_title(library, music_folder):
+    T.write(music_folder / "a.flac", T.TagSet(title="Same Song", artist="Same Band"))
+    T.write(music_folder / "b.mp3", T.TagSet(title="Same Song", artist="Same Band"))
+    T.write(music_folder / "album" / "c.flac", T.TagSet(title="Different Song", artist="Same Band"))
+    scan_into_library(library, [music_folder])
+
+    groups = library.find_duplicates()
+
+    assert len(groups) == 1
+    assert groups[0].count == 2
+    assert {t.path.name for t in groups[0].tracks} == {"a.flac", "b.mp3"}
+
+
+def test_find_duplicates_ignores_case_and_whitespace_differences(library, music_folder):
+    T.write(music_folder / "a.flac", T.TagSet(title="Same Song", artist="Same Band"))
+    T.write(music_folder / "b.mp3", T.TagSet(title="  same   song ", artist="SAME BAND"))
+    scan_into_library(library, [music_folder / "a.flac", music_folder / "b.mp3"])
+
+    groups = library.find_duplicates()
+
+    assert len(groups) == 1
+    assert groups[0].count == 2
+
+
+def test_find_duplicates_skips_tracks_with_a_blank_artist_or_title(library, music_folder):
+    T.write(music_folder / "a.flac", T.TagSet(title="", artist=""))
+    T.write(music_folder / "b.mp3", T.TagSet(title="", artist=""))
+    scan_into_library(library, [music_folder / "a.flac", music_folder / "b.mp3"])
+
+    assert library.find_duplicates() == []
+
+
+def test_find_duplicates_orders_the_lossless_copy_first(library, music_folder):
+    T.write(music_folder / "a.flac", T.TagSet(title="Same Song", artist="Same Band"))
+    T.write(music_folder / "b.mp3", T.TagSet(title="Same Song", artist="Same Band"))
+    scan_into_library(library, [music_folder / "a.flac", music_folder / "b.mp3"])
+
+    [group] = library.find_duplicates()
+
+    assert group.tracks[0].path.name == "a.flac"
+    assert group.tracks[0].is_lossless
+    assert [t.path.name for t in group.redundant_tracks] == ["b.mp3"]
+
+
+def test_find_duplicates_returns_nothing_for_a_library_of_uniques(library, music_folder):
+    T.write(music_folder / "a.flac", T.TagSet(title="One", artist="Artist"))
+    T.write(music_folder / "b.mp3", T.TagSet(title="Two", artist="Artist"))
+    scan_into_library(library, [music_folder])
+
+    assert library.find_duplicates() == []
+
+
+def test_redundant_size_sums_every_copy_but_the_keeper(library, music_folder):
+    T.write(music_folder / "a.flac", T.TagSet(title="Same Song", artist="Same Band"))
+    T.write(music_folder / "b.mp3", T.TagSet(title="Same Song", artist="Same Band"))
+    scan_into_library(library, [music_folder / "a.flac", music_folder / "b.mp3"])
+
+    [group] = library.find_duplicates()
+
+    assert group.redundant_size == sum(t.size_bytes for t in group.tracks[1:])
+    assert group.redundant_size > 0

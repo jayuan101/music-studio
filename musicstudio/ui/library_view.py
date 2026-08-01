@@ -26,6 +26,7 @@ from ..core import tags as tags_module
 from ..db import Library, TrackRow, scan_into_library
 from . import theme
 from .common import card, format_size, heading, row, section_label, spacer
+from .duplicates_dialog import DuplicatesDialog
 from .tag_panel import ArtworkView
 
 #: Smaller than the Tags & art page's own artwork box -- this is a
@@ -232,6 +233,14 @@ class LibraryPanel(QWidget):
         remove_missing.setToolTip("Drop library entries whose files no longer exist")
         remove_missing.clicked.connect(self.remove_missing)
 
+        find_duplicates = QPushButton("Find duplicates…")
+        find_duplicates.setToolTip(
+            "Group tracks that share the same artist and title -- usually the same "
+            "song downloaded twice, or converted to a new format alongside the "
+            "original -- so you can pick which copies to delete."
+        )
+        find_duplicates.clicked.connect(self._find_duplicates)
+
         toolbar = QWidget()
         toolbar_layout = QHBoxLayout(toolbar)
         toolbar_layout.setContentsMargins(0, 0, 0, 0)
@@ -241,6 +250,7 @@ class LibraryPanel(QWidget):
         toolbar_layout.addWidget(add_folder)
         toolbar_layout.addWidget(rescan)
         toolbar_layout.addWidget(remove_missing)
+        toolbar_layout.addWidget(find_duplicates)
         layout.addWidget(toolbar)
 
         # -- table ------------------------------------------------------
@@ -633,6 +643,20 @@ class LibraryPanel(QWidget):
             )
         else:
             self.status_label.setText(f"Deleted {deleted} file(s)")
+
+    def _find_duplicates(self) -> None:
+        """Open a report of tracks that share an artist and title."""
+        groups = self.library.find_duplicates()
+        if not groups:
+            QMessageBox.information(
+                self, "No duplicates found", "No duplicate songs were found in your library."
+            )
+            return
+
+        dialog = DuplicatesDialog(self.library, groups, parent=self)
+        dialog.exec()
+        if dialog.deleted_paths:
+            self.refresh()
 
     def remove_missing(self) -> None:
         """Drop rows whose files are no longer on disk."""
