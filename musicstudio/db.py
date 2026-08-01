@@ -80,6 +80,7 @@ class TrackRow:
     is_lossless: bool
     has_artwork: bool
     artwork_width: int
+    size_bytes: int = 0
 
     @property
     def display_title(self) -> str:
@@ -211,6 +212,40 @@ class TrackFilter:
         return f"{where} {order} {limit}".strip(), params
 
 
+def _normalized_key(text: str) -> str:
+    """Casefold and collapse whitespace, so "The Weeknd" and "the  weeknd "
+    are recognised as the same artist/title when grouping duplicates."""
+    return " ".join(text.split()).casefold()
+
+
+@dataclass
+class DuplicateGroup:
+    """Two or more indexed tracks that appear to be the same song.
+
+    ``tracks`` is sorted best-quality-first (lossless, then bit depth, sample
+    rate, bitrate, file size) so callers can default to recommending every
+    entry after the first for deletion.
+    """
+
+    artist: str
+    title: str
+    tracks: list[TrackRow]
+
+    @property
+    def count(self) -> int:
+        return len(self.tracks)
+
+    @property
+    def redundant_tracks(self) -> list[TrackRow]:
+        """Every copy except the recommended keeper."""
+        return self.tracks[1:]
+
+    @property
+    def redundant_size(self) -> int:
+        """Disk space the redundant copies take up."""
+        return sum(t.size_bytes for t in self.redundant_tracks)
+
+
 class Library:
     """Thread-safe SQLite wrapper for the track index."""
 
@@ -329,6 +364,7 @@ class Library:
             is_lossless=bool(row["is_lossless"]),
             has_artwork=bool(row["has_artwork"]),
             artwork_width=row["artwork_width"],
+            size_bytes=row["size_bytes"],
         )
 
     def all_tracks(self) -> list[TrackRow]:
@@ -412,6 +448,46 @@ class Library:
             "lossless": row["lossless"],
             "with_art": row["with_art"],
         }
+
+    def find_duplicates(self) -> list[DuplicateGroup]:
+        """Group indexed tracks that appear to be the same song.
+
+        Grouped by normalized (artist, title) since that is what this app can
+        itself create duplicates of -- a song downloaded twice, or converted
+        to a new format alongside the original rather than in place. Tracks
+        with a blank artist or title are skipped rather than grouped under
+        an empty key, which would otherwise lump every untagged file
+        together as one giant false "duplicate". This will not catch two
+        files with the same audio under different tags -- that would need
+        decoding and comparing the audio itself, which this does not attempt.
+        """
+        groups: dict[tuple[str, str], list[TrackRow]] = {}
+        for track in self.all_tracks():
+            artist_key = _normalized_key(track.artist or track.albumartist)
+            title_key = _normalized_key(track.title)
+            if not artist_key or not title_key:
+                continue
+            groups.setdefault((artist_key, title_key), []).append(track)
+
+        result: list[DuplicateGroup] = []
+        for tracks in groups.values():
+            if len(tracks) < 2:
+                continue
+            tracks.sort(
+                key=lambda t: (
+                    not t.is_lossless,
+                    -(t.bit_depth or 0),
+                    -(t.sample_rate or 0),
+                    -(t.bitrate or 0),
+                    -(t.size_bytes or 0),
+                )
+            )
+            result.append(
+                DuplicateGroup(artist=tracks[0].artist, title=tracks[0].title, tracks=tracks)
+            )
+
+        result.sort(key=lambda g: (_normalized_key(g.artist), _normalized_key(g.title)))
+        return result
 
 
 # ---------------------------------------------------------------------------
