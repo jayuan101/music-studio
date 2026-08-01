@@ -199,6 +199,80 @@ def test_url_info_duration_label():
 
 
 # ---------------------------------------------------------------------------
+# search() -- dispatch across SEARCH_SOURCES
+#
+# _search_source() is the yt-dlp boundary (not exercised here, same as the
+# rest of this module); these cover search()'s own logic for fanning a query
+# out across sources and tolerating one of them failing.
+# ---------------------------------------------------------------------------
+
+
+def test_search_queries_every_source_by_default(monkeypatch):
+    calls = []
+
+    def fake_search_source(source, prefix, query, limit):
+        calls.append(source)
+        return [download.SearchResult(title=f"{source} hit", source=source)]
+
+    monkeypatch.setattr(download, "_search_source", fake_search_source)
+
+    results = download.search("some song")
+
+    assert set(calls) == set(download.SEARCH_SOURCES)
+    assert {r.source for r in results} == set(download.SEARCH_SOURCES)
+
+
+def test_search_can_be_limited_to_specific_sources(monkeypatch):
+    calls = []
+    monkeypatch.setattr(
+        download,
+        "_search_source",
+        lambda source, prefix, query, limit: calls.append(source) or [],
+    )
+
+    download.search("some song", sources=["SoundCloud"])
+
+    assert calls == ["SoundCloud"]
+
+
+def test_search_survives_one_source_failing(monkeypatch):
+    def fake_search_source(source, prefix, query, limit):
+        if source == "YouTube":
+            raise download.DownloadError("network hiccup")
+        return [download.SearchResult(title="Still here", source=source)]
+
+    monkeypatch.setattr(download, "_search_source", fake_search_source)
+
+    results = download.search("some song")
+
+    assert len(results) == 1
+    assert results[0].source == "SoundCloud"
+
+
+def test_search_raises_only_when_every_source_fails(monkeypatch):
+    monkeypatch.setattr(
+        download,
+        "_search_source",
+        lambda source, prefix, query, limit: (_ for _ in ()).throw(
+            download.DownloadError("down")
+        ),
+    )
+
+    with pytest.raises(download.DownloadError):
+        download.search("some song")
+
+
+def test_search_returns_empty_list_for_a_blank_query(monkeypatch):
+    monkeypatch.setattr(
+        download,
+        "_search_source",
+        lambda *a, **k: (_ for _ in ()).throw(AssertionError("should not be called")),
+    )
+
+    assert download.search("   ") == []
+
+
+# ---------------------------------------------------------------------------
 # _best_thumbnail
 #
 # A real bug: flat search extraction (used by search(), to stay fast over a
