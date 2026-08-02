@@ -308,7 +308,10 @@ class TagPanel(QWidget):
 
     def _choose_artwork(self) -> None:
         path, _ = QFileDialog.getOpenFileName(
-            self, "Choose a cover image", "", "Images (*.jpg *.jpeg *.png *.webp)"
+            self,
+            "Choose a cover image",
+            "",
+            "Images (*.jpg *.jpeg *.jfif *.png *.webp *.gif *.bmp);;All files (*)",
         )
         if path:
             try:

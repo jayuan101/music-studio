@@ -63,3 +63,34 @@ def install() -> None:
         )
 
     threading.excepthook = _thread_excepthook
+
+
+def install_qt_message_handler() -> None:
+    """Log every Qt-level warning/critical/fatal message to debug.log.
+
+    Windows Error Reporting has shown this app crashing with exception code
+    0xc0000409 faulting inside ucrtbase.dll, additional info 7
+    (FAST_FAIL_FATAL_APP_EXIT) -- the exact signature of a plain C
+    ``abort()`` call. Qt calls ``abort()`` itself via ``qFatal()`` on certain
+    internal assertion failures (the most common being a GUI operation
+    performed from the wrong thread), always printing a message immediately
+    before doing so. That message never reaches sys.excepthook -- the
+    process dies below the Python interpreter, not inside it -- so this is
+    the only way to see what Qt thought was fatal enough to abort over.
+    """
+    from PySide6.QtCore import QtMsgType, qInstallMessageHandler
+
+    level_names = {
+        QtMsgType.QtDebugMsg: "debug",
+        QtMsgType.QtInfoMsg: "info",
+        QtMsgType.QtWarningMsg: "warning",
+        QtMsgType.QtCriticalMsg: "critical",
+        QtMsgType.QtFatalMsg: "FATAL",
+    }
+
+    def _handler(msg_type, context, message) -> None:
+        level = level_names.get(msg_type, str(msg_type))
+        location = f" ({context.file}:{context.line})" if getattr(context, "file", None) else ""
+        debug(f"qt {level}: {message}{location}")
+
+    qInstallMessageHandler(_handler)
