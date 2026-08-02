@@ -7,6 +7,11 @@ dist/
 .venv/
 venv/
 
+# The packaged app the user actually runs day-to-day -- a downloaded release
+# build kept alongside the source for convenience, not a build output of
+# this checkout and never committed.
+installed-app/
+
 # Bundled ffmpeg binaries are downloaded at build time, never committed.
 vendor/
 
