@@ -11,6 +11,8 @@ venv/
 # build kept alongside the source for convenience, not a build output of
 # this checkout and never committed.
 installed-app/
+# An old (2026-07-30) standalone build kept only as a personal backup.
+build-backup/
 
 # Bundled ffmpeg binaries are downloaded at build time, never committed.
 vendor/

@@ -263,6 +263,7 @@ def _normalized_key(text: str) -> str:
 def _quality_sort_key(t: "TrackRow") -> tuple:
     return (
         not t.is_lossless,
+        not t.has_artwork,
         -(t.bit_depth or 0),
         -(t.sample_rate or 0),
         -(t.bitrate or 0),

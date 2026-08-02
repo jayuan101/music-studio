@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import shutil
 import sys
+import time
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -29,6 +30,7 @@ else:
     from send2trash import send2trash
 
 from ..db import Library
+from . import crash_log
 from . import probe
 from . import tags as tags_module
 from .convert import unique_destination
@@ -38,6 +40,17 @@ from .convert import unique_destination
 class TrashResult:
     trashed: list[Path] = field(default_factory=list)
     failed: list[tuple[Path, str]] = field(default_factory=list)
+
+
+#: A file that was just added or modified (a fresh download, a just-completed
+#: conversion) is briefly held open by Windows Search Indexer or antivirus
+#: real-time scanning -- confirmed via debug.log as the actual cause of a
+#: "file in use by another process" (WinError 32) delete failure this
+#: session. That lock is transient, typically gone within a second or two,
+#: so a short retry absorbs it instead of surfacing a failure for something
+#: that would succeed if tried again a moment later.
+_TRASH_RETRIES = 5
+_TRASH_RETRY_DELAY_S = 0.5
 
 
 def send_to_trash(library: Library, paths: list[Path]) -> TrashResult:
@@ -52,10 +65,21 @@ def send_to_trash(library: Library, paths: list[Path]) -> TrashResult:
     failed: list[tuple[Path, str]] = []
     for path in paths:
         path = Path(path)
-        try:
-            send2trash(str(path))
-        except Exception as exc:  # noqa: BLE001 -- one bad file must not abort the whole delete
-            failed.append((path, str(exc)))
+        last_exc: Exception | None = None
+        for attempt in range(_TRASH_RETRIES):
+            try:
+                send2trash(str(path))
+                last_exc = None
+                break
+            except Exception as exc:  # noqa: BLE001 -- one bad file must not abort the whole delete
+                last_exc = exc
+                # TEMPORARY: remove once the retry is confirmed to actually
+                # absorb the transient lock in practice, not just in theory.
+                crash_log.debug(f"send_to_trash: attempt {attempt + 1} failed for {path.name}: {exc!r}")
+                if attempt < _TRASH_RETRIES - 1:
+                    time.sleep(_TRASH_RETRY_DELAY_S)
+        if last_exc is not None:
+            failed.append((path, str(last_exc)))
         else:
             library.remove(path)
             trashed.append(path)
