@@ -16,12 +16,14 @@ from PySide6.QtWidgets import (
 )
 
 from . import theme
+from ..core import crash_log
 
 
 def confirm_delete(parent: QWidget | None, paths: list[Path]) -> bool:
     """The one delete confirmation, shared by every delete entry point --
     the duplicates dialog and the library view's own Delete action both
     call this instead of building their own near-identical dialog."""
+    crash_log.debug(f"confirm_delete: called with {len(paths)} path(s)")
     names = "\n".join(Path(p).name for p in paths[:10])
     if len(paths) > 10:
         names += f"\n… and {len(paths) - 10} more"
@@ -34,6 +36,7 @@ def confirm_delete(parent: QWidget | None, paths: list[Path]) -> bool:
         QMessageBox.Yes | QMessageBox.Cancel,
         QMessageBox.Cancel,
     )
+    crash_log.debug(f"confirm_delete: dialog closed, reply={reply!r}")
     return reply == QMessageBox.Yes
 
 

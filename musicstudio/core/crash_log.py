@@ -17,6 +17,22 @@ from datetime import datetime, timezone
 from ..config import DATA_DIR
 
 CRASH_LOG_PATH = DATA_DIR / "crash.log"
+DEBUG_LOG_PATH = DATA_DIR / "debug.log"
+
+
+def debug(message: str) -> None:
+    """Append a timestamped line to debug.log.
+
+    Separate from crash.log -- this is for temporary, targeted instrumentation
+    of a specific code path under active investigation, not for the crash
+    hook's job. Never raises; a failure to log must never break the caller.
+    """
+    try:
+        DEBUG_LOG_PATH.parent.mkdir(parents=True, exist_ok=True)
+        with open(DEBUG_LOG_PATH, "a", encoding="utf-8") as f:
+            f.write(f"{datetime.now(timezone.utc).isoformat()}  {message}\n")
+    except OSError:
+        pass
 
 
 def _write(header: str, exc_type, exc_value, exc_tb) -> None:
