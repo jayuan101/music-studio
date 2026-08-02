@@ -94,8 +94,10 @@ class Settings:
 
     # -- Download -------------------------------------------------------
     #: "keep" downloads the best original stream untouched (no re-encode).
-    #: "convert" re-encodes into `download_format`.
-    download_mode: str = "keep"
+    #: "convert" re-encodes into `download_format`. Defaults to converting so
+    #: every download lands as a proper library format (FLAC) rather than
+    #: whatever container the source happens to use (often Opus-in-WebM).
+    download_mode: str = "convert"
     download_format: str = "flac"
     download_embed_thumbnail: bool = True
     download_playlist_limit: int = 0  # 0 = no limit
