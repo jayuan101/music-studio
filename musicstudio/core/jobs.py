@@ -97,15 +97,35 @@ class Job(QRunnable):
         self.setAutoDelete(False)  # the queue keeps jobs around for display
 
     # -- progress plumbing ---------------------------------------------
+    def _safe_emit(self, signal, *args) -> None:
+        """Emit, tolerating a signal whose underlying QObject is already
+        gone.
+
+        ``self.signals`` is a plain QObject with no Qt parent, so nothing
+        guarantees its C++ side outlives this Job if the last Python
+        reference to the Job is dropped while a worker thread is still
+        running it (QRunnable, unlike QObject, has no parent-child
+        ownership to keep it alive). Letting that show up as an exception
+        escaping a Python override of a C++ virtual (QRunnable.run()) is
+        unsafe -- PySide6 cannot always propagate it cleanly, and it has been
+        observed taking the whole process down instead of just this job.
+        Nobody is listening on a deleted signal source anyway, so this is a
+        safe no-op, not a swallowed real failure.
+        """
+        try:
+            signal.emit(*args)
+        except RuntimeError:
+            pass
+
     def _on_progress(self, fraction: float | None, message: str) -> None:
         self.fraction = fraction
         if message:
             self.message = message
-        self.signals.progress.emit(self.id, fraction, message)
+        self._safe_emit(self.signals.progress, self.id, fraction, message)
 
     def _set_state(self, state: JobState) -> None:
         self.state = state
-        self.signals.state_changed.emit(self.id, state.value)
+        self._safe_emit(self.signals.state_changed, self.id, state.value)
 
     def cancel(self) -> None:
         """Request cancellation. A pending job stops immediately; a running one
@@ -113,11 +133,17 @@ class Job(QRunnable):
         self.context.cancel()
         if self.state is JobState.PENDING:
             self._set_state(JobState.CANCELLED)
-            self.signals.finished.emit(self.id, JobState.CANCELLED.value, None)
+            self._safe_emit(self.signals.finished, self.id, JobState.CANCELLED.value, None)
 
     # -- execution ------------------------------------------------------
     @Slot()
     def run(self) -> None:
+        try:
+            self._run()
+        except BaseException:  # noqa: BLE001 -- must never escape a QRunnable override
+            traceback.print_exc()
+
+    def _run(self) -> None:
         if self.state is JobState.CANCELLED:
             return
         self._set_state(JobState.RUNNING)
@@ -125,18 +151,18 @@ class Job(QRunnable):
             self.result = self.func(self.context, *self.args, **self.kwargs)
         except CancelledError:
             self._set_state(JobState.CANCELLED)
-            self.signals.finished.emit(self.id, JobState.CANCELLED.value, None)
+            self._safe_emit(self.signals.finished, self.id, JobState.CANCELLED.value, None)
             return
         except BaseException as exc:  # noqa: BLE001 -- one bad job must not kill the queue
             self.error = exc
             self.message = str(exc) or exc.__class__.__name__
             traceback.print_exc()
             self._set_state(JobState.FAILED)
-            self.signals.finished.emit(self.id, JobState.FAILED.value, exc)
+            self._safe_emit(self.signals.finished, self.id, JobState.FAILED.value, exc)
             return
         self.fraction = 1.0
         self._set_state(JobState.SUCCEEDED)
-        self.signals.finished.emit(self.id, JobState.SUCCEEDED.value, self.result)
+        self._safe_emit(self.signals.finished, self.id, JobState.SUCCEEDED.value, self.result)
 
 
 class JobQueue(QObject):

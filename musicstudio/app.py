@@ -9,6 +9,7 @@ from PySide6.QtWidgets import QApplication
 
 from . import APP_NAME, APP_ORG, __version__
 from .config import ensure_dirs
+from .core import crash_log
 from .ui import theme
 
 
@@ -27,6 +28,7 @@ def create_app(argv: list[str] | None = None) -> QApplication:
 
 def main(argv: list[str] | None = None) -> int:
     ensure_dirs()
+    crash_log.install()
     app = create_app(argv)
 
     from .ui.main_window import MainWindow
