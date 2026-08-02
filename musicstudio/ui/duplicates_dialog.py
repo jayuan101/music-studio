@@ -37,7 +37,7 @@ from PySide6.QtWidgets import (
 from ..core import library_ops
 from ..core import tags as tags_module
 from ..db import DuplicateGroup, Library, sort_key_for_criterion
-from .common import confirm_permanent_delete, format_size
+from .common import confirm_delete, format_size
 
 
 class DuplicatesDialog(QDialog):
@@ -196,14 +196,14 @@ class DuplicatesDialog(QDialog):
         self._populate()
 
     def _delete_single(self, path: Path) -> None:
-        if not confirm_permanent_delete(self, [path]):
+        if not confirm_delete(self, [path]):
             return
         if self.merge_metadata_check.isChecked():
             self._merge_metadata_before_delete([path])
 
-        result = library_ops.delete_files_permanently(self.library, [path])
-        self.deleted_paths.extend(result.deleted)
-        self.groups = _drop_deleted(self.groups, result.deleted)
+        result = library_ops.send_to_trash(self.library, [path])
+        self.deleted_paths.extend(result.trashed)
+        self.groups = _drop_deleted(self.groups, result.trashed)
         self._populate()
         if result.failed:
             failed_path, err = result.failed[0]
@@ -252,22 +252,22 @@ class DuplicatesDialog(QDialog):
                 self, "Nothing checked", "No copies are checked for deletion."
             )
             return
-        if not confirm_permanent_delete(self, paths):
+        if not confirm_delete(self, paths):
             return
 
         if self.merge_metadata_check.isChecked():
             self._merge_metadata_before_delete(paths)
 
-        result = library_ops.delete_files_permanently(self.library, paths)
-        self.deleted_paths.extend(result.deleted)
-        self.groups = _drop_deleted(self.groups, result.deleted)
+        result = library_ops.send_to_trash(self.library, paths)
+        self.deleted_paths.extend(result.trashed)
+        self.groups = _drop_deleted(self.groups, result.trashed)
         self._populate()
 
         if result.failed:
             QMessageBox.warning(
                 self,
                 "Some files failed",
-                f"Deleted {len(result.deleted)} file(s); {len(result.failed)} failed:\n"
+                f"Deleted {len(result.trashed)} file(s); {len(result.failed)} failed:\n"
                 + "\n".join(f"{p.name}: {err}" for p, err in result.failed),
             )
 
