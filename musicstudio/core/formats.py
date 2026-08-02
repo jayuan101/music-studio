@@ -17,8 +17,19 @@ IMPORTABLE_EXTENSIONS = frozenset(
         ".wav", ".wave", ".aiff", ".aif", ".aifc", ".wma", ".wv", ".ape",
         ".alac", ".mka", ".mpc", ".tta", ".spx", ".ac3", ".dts", ".amr",
         ".au", ".ra", ".m4b", ".mp2", ".caf", ".w64", ".dsf", ".dff",
+        # yt-dlp's "keep original stream" mode commonly hands back Opus or
+        # Vorbis audio muxed into a WebM container -- without this, every
+        # such download sits in the library folder invisibly, never scanned.
+        ".webm", ".weba",
     }
 )
+
+#: Containers that are valid audio sources but are not a format this library
+#: keeps around -- a scan transcodes these to FLAC and deletes the original
+#: instead of indexing them as-is, so the library only ever holds proper
+#: music file extensions. WebM/WebA is the only case in practice (a raw
+#: video-site container yt-dlp can hand back in "keep original" mode).
+NORMALIZE_ON_IMPORT_EXTENSIONS = frozenset({".webm", ".weba"})
 
 
 @dataclass(frozen=True)

@@ -2,15 +2,43 @@
 
 from __future__ import annotations
 
+import httpx
 import pytest
 
 from musicstudio.core import formats, probe
+from musicstudio.core import spotify as spotify_module
 from musicstudio.core import tags as T
 from musicstudio.db import Library, find_audio_files, scan_into_library
 
 from .conftest import make_tone, requires_ffmpeg
 
 pytestmark = requires_ffmpeg
+
+
+@pytest.fixture(autouse=True)
+def _no_network_tag_lookups(monkeypatch):
+    """Normalizing a WebM file runs the same online tag lookup as "Fix
+    metadata" -- keep it hermetic here the same way test_tag_fix.py does."""
+
+    class _EmptyResponse:
+        def json(self):
+            return {"results": []}
+
+        def raise_for_status(self):
+            pass
+
+    class _EmptyClient:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            return False
+
+        def get(self, *a, **k):
+            return _EmptyResponse()
+
+    monkeypatch.setattr(httpx, "Client", lambda *a, **k: _EmptyClient())
+    monkeypatch.setattr(spotify_module, "find_track", lambda *a, **k: None)
 
 
 # ---------------------------------------------------------------------------
@@ -473,3 +501,57 @@ def test_upsert_persists_source_url(library, music_folder):
     T.write(target, T.TagSet(title="Song", source_url="https://youtu.be/abc123"))
     scan_into_library(library, [target])
     assert library.get(target).source_url == "https://youtu.be/abc123"
+
+
+# ---------------------------------------------------------------------------
+# Normalize-on-import: WebM/WebA -> FLAC
+# ---------------------------------------------------------------------------
+
+
+def _make_webm(path, *, duration=1.0):
+    """A minimal Opus-in-WebM file, the shape yt-dlp's "keep original" mode
+    commonly produces for a YouTube download."""
+    make_tone(path, codec="libopus", duration=duration, extra=["-f", "webm"])
+    return path
+
+
+def test_webm_is_found_by_a_scan(tmp_path):
+    folder = tmp_path / "music"
+    folder.mkdir()
+    _make_webm(folder / "video.webm")
+    found = find_audio_files([folder])
+    assert [p.name for p in found] == ["video.webm"]
+
+
+def test_scan_normalizes_webm_to_flac_and_removes_the_original(library, tmp_path):
+    folder = tmp_path / "music"
+    folder.mkdir()
+    webm = _make_webm(folder / "video.webm", duration=1.0)
+
+    imported, skipped = scan_into_library(library, [folder])
+
+    assert imported == 1
+    assert skipped == 0
+    assert not webm.exists()
+    flac = folder / "video.flac"
+    assert flac.exists()
+    row = library.get(flac)
+    assert row is not None
+    assert row.codec == "flac"
+    assert row.is_lossless
+    # WebM carries no tags mutagen can read at all -- the filename is the
+    # only thing available, and it must not be left blank.
+    assert row.title == "video"
+
+
+def test_normalized_flac_does_not_collide_with_an_existing_file(library, tmp_path):
+    folder = tmp_path / "music"
+    folder.mkdir()
+    (folder / "video.flac").write_bytes(b"already exists, not real audio")
+    _make_webm(folder / "video.webm", duration=1.0)
+
+    imported, _ = scan_into_library(library, [folder])
+
+    assert imported == 1
+    assert (folder / "video.flac").exists()
+    assert (folder / "video (2).flac").exists()
