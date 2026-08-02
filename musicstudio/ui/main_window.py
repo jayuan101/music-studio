@@ -22,6 +22,7 @@ from PySide6.QtWidgets import (
 from .. import APP_NAME, __version__
 from ..config import ensure_dirs, get_settings
 from ..core import artwork as artwork_module
+from ..core import autotrim as autotrim_module
 from ..core import ffmpeg
 from ..core import tag_fix as tag_fix_module
 from ..core import ytmusic as ytmusic_module
@@ -181,6 +182,7 @@ class MainWindow(QMainWindow):
         self.library_panel.artwork_requested.connect(self._update_artwork)
         self.library_panel.tags_fix_requested.connect(self._fix_library_tags)
         self.library_panel.ytmusic_format_requested.connect(self._format_for_ytmusic)
+        self.library_panel.auto_trim_requested.connect(self._auto_trim_selected)
         self.library_panel.play_requested.connect(self.now_playing_bar.play_queue)
         self.library_panel.selection_changed.connect(self._preload_editor)
         self.download_panel.preview_ready.connect(
@@ -196,6 +198,7 @@ class MainWindow(QMainWindow):
 
         # Anything that produces or changes a file re-indexes it.
         self.download_panel.downloaded.connect(self._reindex)
+        self.download_panel.downloaded.connect(self._maybe_autotrim_new_tracks)
         self.convert_panel.converted.connect(self._reindex)
         self.editor_panel.exported.connect(self._reindex)
         self.tag_panel.tags_saved.connect(self._reindex)
@@ -357,6 +360,52 @@ class MainWindow(QMainWindow):
             f"· previous tags saved to {snapshot.name}"
         )
         self._reindex([r.path for r in updated])
+
+    def _maybe_autotrim_new_tracks(self, paths: list[Path]) -> None:
+        """Auto-trim right after a download, when the user has opted in.
+
+        Gated by both toggles rather than just clicking "Auto-trim all…" --
+        the settings preference must actually be turned on before this ever
+        touches a file the user did not explicitly select.
+        """
+        settings = get_settings()
+        if not (settings.auto_trim_enabled and settings.auto_trim_new_tracks) or not paths:
+            return
+
+        def work(context, targets):
+            return autotrim_module.autotrim_library(targets, library=self.library, context=context)
+
+        job = self.jobs.submit_func(
+            f"Auto-trimming {len(paths)} new track(s)", work, paths, category="autotrim"
+        )
+        job.signals.finished.connect(self._on_autotrim_finished)
+
+    def _auto_trim_selected(self, paths: list[Path]) -> None:
+        if not paths:
+            self.status_message.setText("Nothing selected to auto-trim")
+            return
+
+        def work(context, targets):
+            # An explicit selection always re-evaluates, ignoring a prior
+            # applied/skipped state and the video-source heuristic gate.
+            return autotrim_module.autotrim_library(
+                targets, library=self.library, context=context, force=True
+            )
+
+        job = self.jobs.submit_func(
+            f"Auto-trimming {len(paths)} track(s)", work, paths, category="autotrim"
+        )
+        job.signals.finished.connect(self._on_autotrim_finished)
+
+    def _on_autotrim_finished(self, _job_id: str, state: str, payload) -> None:
+        if state != "succeeded":
+            self.status_message.setText(f"Auto-trim failed: {payload}")
+            return
+        applied = [o for o in payload if o.updated]
+        self.status_message.setText(
+            f"Auto-trim: trimmed {len(applied)} of {len(payload)} track(s)"
+        )
+        self._reindex([o.path for o in applied])
 
     def _reindex(self, paths: list[Path]) -> None:
         """Re-scan files that changed, then refresh the library view."""

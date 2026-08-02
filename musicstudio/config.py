@@ -106,6 +106,17 @@ class Settings:
     #: artist -- the field YouTube Music groups a library by.
     ytmusic_format_downloads: bool = True
 
+    # -- Auto-trim --------------------------------------------------------
+    #: Detect and remove leading/trailing silence or logo bumpers from
+    #: tracks that look like they came from a music video. Off by default --
+    #: this rewrites the audio file in place.
+    auto_trim_enabled: bool = False
+    #: Run the trim automatically right after each download finishes.
+    auto_trim_new_tracks: bool = False
+    auto_trim_silence_threshold_db: float = -50.0
+    auto_trim_max_intro_s: float = 12.0
+    auto_trim_max_outro_s: float = 12.0
+
     # -- Editing --------------------------------------------------------
     #: True-peak ceiling used by the limiter when boosting past 0 dB.
     limiter_ceiling_db: float = -0.3

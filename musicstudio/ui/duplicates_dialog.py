@@ -6,6 +6,12 @@ groups and lets the user delete whichever copies are checked -- every copy
 but the recommended keeper is pre-checked, since that is the common case
 this app can itself create (a song downloaded twice, or converted to a new
 format alongside the original rather than in place).
+
+Besides deleting, the user can: pick a different criterion for which copy
+counts as the keeper, merge any tags a redundant copy has that the keeper is
+missing before deleting it, move checked copies elsewhere instead of
+deleting them, and mark a group "ignore" so it stops being reported as a
+duplicate at all.
 """
 
 from __future__ import annotations
@@ -14,9 +20,13 @@ from pathlib import Path
 
 from PySide6.QtCore import Qt
 from PySide6.QtWidgets import (
+    QCheckBox,
+    QComboBox,
     QDialog,
+    QFileDialog,
     QHBoxLayout,
     QLabel,
+    QMenu,
     QMessageBox,
     QPushButton,
     QTreeWidget,
@@ -24,8 +34,10 @@ from PySide6.QtWidgets import (
     QVBoxLayout,
 )
 
-from ..db import DuplicateGroup, Library
-from .common import format_size
+from ..core import library_ops
+from ..core import tags as tags_module
+from ..db import DuplicateGroup, Library, sort_key_for_criterion
+from .common import confirm_permanent_delete, format_size
 
 
 class DuplicatesDialog(QDialog):
@@ -35,8 +47,9 @@ class DuplicatesDialog(QDialog):
         super().__init__(parent)
         self.library = library
         self.groups = groups
-        #: Filled in as deletions happen, so the caller knows to refresh.
+        #: Filled in as deletions/moves happen, so the caller knows to refresh.
         self.deleted_paths: list[Path] = []
+        self.moved_paths: list[tuple[Path, Path]] = []
 
         self.setWindowTitle("Duplicate songs")
         self.resize(760, 560)
@@ -50,23 +63,49 @@ class DuplicatesDialog(QDialog):
         self.summary.setWordWrap(True)
         layout.addWidget(self.summary)
 
+        criterion_row = QHBoxLayout()
+        criterion_row.addWidget(QLabel("Auto-select best by:"))
+        self.criterion_combo = QComboBox()
+        self.criterion_combo.addItem("Best quality", "quality")
+        self.criterion_combo.addItem("Newest added", "newest")
+        self.criterion_combo.addItem("Oldest added", "oldest")
+        self.criterion_combo.currentIndexChanged.connect(self._on_criterion_changed)
+        criterion_row.addWidget(self.criterion_combo)
+        criterion_row.addStretch(1)
+        layout.addLayout(criterion_row)
+
         self.tree = QTreeWidget()
         self.tree.setHeaderLabels(["", "File", "Quality", "Size", "Folder"])
         self.tree.setColumnWidth(0, 28)
         self.tree.setColumnWidth(1, 240)
         self.tree.setColumnWidth(2, 130)
         self.tree.setColumnWidth(3, 90)
+        self.tree.setContextMenuPolicy(Qt.CustomContextMenu)
+        self.tree.customContextMenuRequested.connect(self._show_group_context_menu)
         layout.addWidget(self.tree, 1)
 
         self._populate()
 
+        self.merge_metadata_check = QCheckBox(
+            "Merge tags from deleted copies into the keeper first"
+        )
+        self.merge_metadata_check.setToolTip(
+            "Fills in any blank field on the copy you keep from the copies you "
+            "delete. Never overwrites a value the keeper already has."
+        )
+        self.merge_metadata_check.setChecked(True)
+        layout.addWidget(self.merge_metadata_check)
+
         button_row = QHBoxLayout()
+        self.move_button = QPushButton("Move checked to folder…")
+        self.move_button.clicked.connect(self._move_checked)
         self.delete_button = QPushButton("Delete checked copies…")
         self.delete_button.setObjectName("Danger")
         self.delete_button.clicked.connect(self._delete_checked)
         close_button = QPushButton("Close")
         close_button.clicked.connect(self.accept)
         button_row.addStretch(1)
+        button_row.addWidget(self.move_button)
         button_row.addWidget(self.delete_button)
         button_row.addWidget(close_button)
         layout.addLayout(button_row)
@@ -110,6 +149,34 @@ class DuplicatesDialog(QDialog):
             else "No duplicates remain."
         )
 
+    def _on_criterion_changed(self) -> None:
+        """Re-sort each already-fetched group in place, so the pre-checked
+        "keeper" reflects the chosen criterion without re-querying the DB."""
+        key = sort_key_for_criterion(self.criterion_combo.currentData())
+        for group in self.groups:
+            group.tracks.sort(key=key)
+        self._populate()
+
+    def _show_group_context_menu(self, position) -> None:
+        item = self.tree.itemAt(position)
+        if item is None or item.parent() is not None:
+            return  # only a top-level (group header) row offers this
+        index = self.tree.indexOfTopLevelItem(item)
+        if not (0 <= index < len(self.groups)):
+            return
+        group = self.groups[index]
+        menu = QMenu(self)
+        menu.addAction(
+            "Ignore this group (stop showing it as a duplicate)",
+            lambda: self._ignore_group(group),
+        )
+        menu.exec(self.tree.viewport().mapToGlobal(position))
+
+    def _ignore_group(self, group: DuplicateGroup) -> None:
+        self.library.ignore_duplicate_group(group.artist, group.title)
+        self.groups = [g for g in self.groups if g is not group]
+        self._populate()
+
     # -- deleting -----------------------------------------------------------
     def _checked_paths(self) -> list[Path]:
         paths = []
@@ -121,6 +188,19 @@ class DuplicatesDialog(QDialog):
                     paths.append(child.data(0, Qt.UserRole))
         return paths
 
+    def _merge_metadata_before_delete(self, paths_to_delete: list[Path]) -> None:
+        to_delete = set(paths_to_delete)
+        for group in self.groups:
+            keeper = group.tracks[0]
+            if keeper.path in to_delete:
+                continue  # the keeper itself is being deleted -- nothing well-defined to merge into
+            donors = [t.path for t in group.tracks[1:] if t.path in to_delete]
+            if donors:
+                try:
+                    tags_module.merge_missing_tags(keeper.path, donors)
+                except (tags_module.TagError, OSError):
+                    pass  # a merge failure must not block a deletion the user already confirmed
+
     def _delete_checked(self) -> None:
         paths = self._checked_paths()
         if not paths:
@@ -128,40 +208,45 @@ class DuplicatesDialog(QDialog):
                 self, "Nothing checked", "No copies are checked for deletion."
             )
             return
-
-        names = "\n".join(p.name for p in paths[:10])
-        if len(paths) > 10:
-            names += f"\n… and {len(paths) - 10} more"
-        reply = QMessageBox.warning(
-            self,
-            "Delete from disk",
-            f"Permanently delete {len(paths)} file(s)? This cannot be undone.\n\n{names}",
-            QMessageBox.Yes | QMessageBox.Cancel,
-            QMessageBox.Cancel,
-        )
-        if reply != QMessageBox.Yes:
+        if not confirm_permanent_delete(self, paths):
             return
 
-        failed: list[str] = []
-        deleted: list[Path] = []
-        for path in paths:
-            try:
-                path.unlink()
-            except OSError as exc:
-                failed.append(f"{path.name}: {exc}")
-            else:
-                self.library.remove(path)
-                deleted.append(path)
+        if self.merge_metadata_check.isChecked():
+            self._merge_metadata_before_delete(paths)
 
-        self.deleted_paths.extend(deleted)
-        self.groups = _drop_deleted(self.groups, deleted)
+        result = library_ops.delete_files_permanently(self.library, paths)
+        self.deleted_paths.extend(result.deleted)
+        self.groups = _drop_deleted(self.groups, result.deleted)
         self._populate()
 
-        if failed:
+        if result.failed:
             QMessageBox.warning(
                 self,
                 "Some files failed",
-                f"Deleted {len(deleted)} file(s); {len(failed)} failed:\n" + "\n".join(failed),
+                f"Deleted {len(result.deleted)} file(s); {len(result.failed)} failed:\n"
+                + "\n".join(f"{p.name}: {err}" for p, err in result.failed),
+            )
+
+    def _move_checked(self) -> None:
+        paths = self._checked_paths()
+        if not paths:
+            QMessageBox.information(self, "Nothing checked", "No copies are checked.")
+            return
+        directory = QFileDialog.getExistingDirectory(self, "Move duplicate copies to")
+        if not directory:
+            return
+
+        result = library_ops.move_files(self.library, paths, Path(directory))
+        self.moved_paths.extend(result.moved)
+        self.groups = _drop_deleted(self.groups, [old for old, _new in result.moved])
+        self._populate()
+
+        if result.failed:
+            QMessageBox.warning(
+                self,
+                "Some files failed",
+                f"Moved {len(result.moved)} file(s); {len(result.failed)} failed:\n"
+                + "\n".join(f"{p.name}: {err}" for p, err in result.failed),
             )
 
 

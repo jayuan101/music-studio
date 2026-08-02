@@ -1023,6 +1023,28 @@ def copy_tags(source: str | Path, destination: str | Path) -> None:
     write(destination, tags, artwork=tags.artwork)
 
 
+def merge_missing_tags(keeper: str | Path, donors: list[str | Path]) -> bool:
+    """Fill any blank fields (and missing artwork) on ``keeper`` from ``donors``.
+
+    Built on TagSet.merged_with()'s existing overwrite=False contract, so a
+    donor can only fill a blank -- it never replaces a value the keeper
+    already has. Donors are read in order; the first non-blank value for
+    each field wins. Returns True if the keeper's tags actually changed.
+    """
+    keeper = Path(keeper)
+    original = read(keeper)
+    merged = original
+    for donor in donors:
+        try:
+            merged = merged.merged_with(read(Path(donor)))
+        except (TagError, FileNotFoundError, OSError):
+            continue
+    if merged.to_dict(include_artwork=True) == original.to_dict(include_artwork=True):
+        return False
+    write(keeper, merged, artwork=merged.artwork)
+    return True
+
+
 def supports_artwork(path: str | Path) -> bool:
     """Whether this file's container can carry an embedded image."""
     suffix = Path(path).suffix.lower()

@@ -22,10 +22,12 @@ from PySide6.QtWidgets import (
 )
 
 from ..config import get_settings
+from ..core import autotrim as autotrim_module
+from ..core import library_ops
 from ..core import tags as tags_module
 from ..db import Library, TrackRow, scan_into_library
 from . import theme
-from .common import card, format_size, heading, row, section_label, spacer
+from .common import card, confirm_permanent_delete, format_size, heading, row, section_label, spacer
 from .duplicates_dialog import DuplicatesDialog
 from .tag_panel import ArtworkView
 
@@ -162,6 +164,7 @@ class LibraryPanel(QWidget):
     artwork_requested = Signal(list)
     tags_fix_requested = Signal(list)
     ytmusic_format_requested = Signal(list)
+    auto_trim_requested = Signal(list)
     #: Double-click: play this track, queuing every track currently visible
     #: (respecting the active search/sort) -- paths, then the clicked row's
     #: index within that list.
@@ -241,6 +244,14 @@ class LibraryPanel(QWidget):
         )
         find_duplicates.clicked.connect(self._find_duplicates)
 
+        self.auto_trim_all_button = QPushButton("Auto-trim all…")
+        self.auto_trim_all_button.setToolTip(
+            "Detect and remove leading/trailing silence or logo bumpers from every "
+            "library track that looks like it came from a music video (a YouTube/"
+            "SoundCloud rip, or a title carrying \"(Official Video)\"-style noise)."
+        )
+        self.auto_trim_all_button.clicked.connect(self._auto_trim_all)
+
         toolbar = QWidget()
         toolbar_layout = QHBoxLayout(toolbar)
         toolbar_layout.setContentsMargins(0, 0, 0, 0)
@@ -251,6 +262,7 @@ class LibraryPanel(QWidget):
         toolbar_layout.addWidget(rescan)
         toolbar_layout.addWidget(remove_missing)
         toolbar_layout.addWidget(find_duplicates)
+        toolbar_layout.addWidget(self.auto_trim_all_button)
         layout.addWidget(toolbar)
 
         # -- table ------------------------------------------------------
@@ -486,6 +498,8 @@ class LibraryPanel(QWidget):
         fix_tags_action.triggered.connect(lambda: self.tags_fix_requested.emit(paths))
         ytmusic_action = menu.addAction("YouTube Music format…")
         ytmusic_action.triggered.connect(lambda: self.ytmusic_format_requested.emit(paths))
+        auto_trim_action = menu.addAction("Auto-trim intro/outro…")
+        auto_trim_action.triggered.connect(lambda: self.auto_trim_requested.emit(paths))
 
         menu.addSeparator()
         delete_action = menu.addAction("Delete…")
@@ -611,38 +625,18 @@ class LibraryPanel(QWidget):
         paths = self.selected_paths()
         if not paths:
             return
-
-        names = "\n".join(p.name for p in paths[:10])
-        if len(paths) > 10:
-            names += f"\n… and {len(paths) - 10} more"
-        reply = QMessageBox.warning(
-            self,
-            "Delete from disk",
-            f"Permanently delete {len(paths)} file(s)? This cannot be undone.\n\n{names}",
-            QMessageBox.Yes | QMessageBox.Cancel,
-            QMessageBox.Cancel,
-        )
-        if reply != QMessageBox.Yes:
+        if not confirm_permanent_delete(self, paths):
             return
 
-        failed = []
-        deleted = 0
-        for path in paths:
-            try:
-                path.unlink()
-            except OSError as exc:
-                failed.append(f"{path.name}: {exc}")
-            else:
-                self.library.remove(path)
-                deleted += 1
-
+        result = library_ops.delete_files_permanently(self.library, paths)
         self.refresh()
-        if failed:
+        if result.failed:
+            failed_text = "; ".join(f"{p.name}: {err}" for p, err in result.failed)
             self.status_label.setText(
-                f"Deleted {deleted} file(s); {len(failed)} failed: {'; '.join(failed)}"
+                f"Deleted {len(result.deleted)} file(s); {len(result.failed)} failed: {failed_text}"
             )
         else:
-            self.status_label.setText(f"Deleted {deleted} file(s)")
+            self.status_label.setText(f"Deleted {len(result.deleted)} file(s)")
 
     def _find_duplicates(self) -> None:
         """Open a report of tracks that share an artist and title."""
@@ -655,8 +649,42 @@ class LibraryPanel(QWidget):
 
         dialog = DuplicatesDialog(self.library, groups, parent=self)
         dialog.exec()
-        if dialog.deleted_paths:
+        if dialog.deleted_paths or dialog.moved_paths:
             self.refresh()
+
+    def _auto_trim_all(self) -> None:
+        """Bulk pass: detect and remove intro/outro noise from every track in
+        the library that looks like it came from a music video."""
+        candidates = self.library.autotrim_candidates()
+        if not candidates:
+            self.status_label.setText("No candidate tracks for auto-trim")
+            return
+        paths = [c.path for c in candidates]
+
+        def work(context, targets):
+            return autotrim_module.autotrim_library(targets, library=self.library, context=context)
+
+        job = self.jobs.submit_func(
+            f"Auto-trimming {len(paths)} track(s)", work, paths, category="autotrim"
+        )
+        job.signals.finished.connect(self._on_auto_trim_finished)
+
+    def _on_auto_trim_finished(self, _job_id: str, state: str, payload) -> None:
+        if state != "succeeded":
+            self.status_label.setText(f"Auto-trim failed: {payload}")
+            return
+        applied = [o for o in payload if o.updated]
+        self.status_label.setText(f"Auto-trim: trimmed {len(applied)} of {len(payload)} track(s)")
+        if applied:
+            trimmed_paths = [o.path for o in applied]
+
+            def work(context, targets):
+                return scan_into_library(self.library, targets, context=context, force=True)
+
+            job = self.jobs.submit_func(
+                f"Indexing {len(trimmed_paths)} file(s)", work, trimmed_paths, category="import"
+            )
+            job.signals.finished.connect(lambda *_: self.refresh())
 
     def remove_missing(self) -> None:
         """Drop rows whose files are no longer on disk."""
