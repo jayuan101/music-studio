@@ -14,9 +14,12 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from .config import DB_PATH
+from .core import convert as convert_module
+from .core import ffmpeg
 from .core import probe
 from .core import tags as tags_module
-from .core.formats import IMPORTABLE_EXTENSIONS
+from .core.convert import ConvertRequest, unique_destination
+from .core.formats import FLAC, IMPORTABLE_EXTENSIONS, NORMALIZE_ON_IMPORT_EXTENSIONS
 
 SCHEMA_VERSION = 2
 
@@ -650,6 +653,48 @@ def find_audio_files(roots: list[Path], *, recursive: bool = True) -> list[Path]
     return sorted(found)
 
 
+def _normalize_to_flac(path: Path, info: probe.AudioInfo) -> Path:
+    """Transcode a WebM/WebA source to FLAC and remove the original.
+
+    Called for every file found in NORMALIZE_ON_IMPORT_EXTENSIONS so the
+    library only ever holds proper music file extensions -- a raw video-site
+    container kept from a download otherwise sits there indefinitely,
+    indistinguishable from any other "not really music" file. Raises on
+    failure (a bad/incomplete webm, or ffmpeg rejecting it), leaving the
+    original file on disk untouched.
+
+    WebM downloads from a video site carry no tags mutagen can read at all
+    (mutagen does not recognise the container), so a straight copy_tags()
+    would always be a no-op -- instead this fills in title/artist from the
+    filename and, when still missing, album/year/genre from an online
+    lookup, the same as the "Fix metadata" button does. A network failure
+    here must never fail the conversion itself: worst case the track is
+    imported with only what the filename gave it, same as any other
+    unrecognised-tag file.
+    """
+    from .core import tag_fix as tag_fix_module
+
+    destination = unique_destination(path.with_suffix(".flac"))
+    request = ConvertRequest(source=path, destination=destination, profile=FLAC, overwrite=True)
+    convert_module.convert(request, info=info)
+
+    # The original is only ever deleted once the FLAC has been independently
+    # verified to hold the same audio -- a conversion that silently produced
+    # a truncated or empty file must never cost the user their only copy.
+    result_info = probe.try_probe(destination)
+    if result_info is None or abs(result_info.duration - info.duration) > 1.0:
+        destination.unlink(missing_ok=True)
+        raise ValueError(f"Converted duration did not match source for {path.name}")
+
+    try:
+        fixed = tag_fix_module.fix_file_tags(destination)
+        tags_module.write(destination, fixed)
+    except Exception:  # noqa: BLE001 -- a metadata guess failing must not lose the audio
+        pass
+    path.unlink()
+    return destination
+
+
 def scan_into_library(
     library: Library,
     paths: list[Path],
@@ -661,7 +706,9 @@ def scan_into_library(
 
     A file that cannot be probed is skipped rather than raising -- libraries
     always contain a few corrupt or zero-byte files, and one must not stop
-    the import.
+    the import. A file in NORMALIZE_ON_IMPORT_EXTENSIONS (currently just
+    WebM/WebA) is transcoded to FLAC and the original deleted before being
+    indexed, rather than indexed under its original extension.
     """
     files = find_audio_files(paths)
     imported = skipped = 0
@@ -680,6 +727,18 @@ def scan_into_library(
         if info is None:
             skipped += 1
             continue
+
+        if path.suffix.lower() in NORMALIZE_ON_IMPORT_EXTENSIONS:
+            try:
+                path = _normalize_to_flac(path, info)
+                info = probe.try_probe(path)
+            except (OSError, ValueError, ffmpeg.FFmpegError, ffmpeg.FFmpegNotFound):
+                skipped += 1
+                continue
+            if info is None:
+                skipped += 1
+                continue
+
         library.upsert(path, info, tags_module.try_read(path))
         imported += 1
 
