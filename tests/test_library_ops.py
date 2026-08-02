@@ -11,27 +11,30 @@ from .conftest import make_tone, requires_ffmpeg
 pytestmark = requires_ffmpeg
 
 
-def test_delete_files_permanently_removes_file_and_row(tmp_path):
+def test_send_to_trash_removes_file_and_row(tmp_path):
+    """Uses the real send2trash -- exercised here rather than mocked so this
+    actually proves a file can be recovered from the Recycle Bin, not just
+    that our code called a function named send2trash."""
     library = Library(tmp_path / "test.db")
     track = make_tone(tmp_path / "a.flac", duration=1.0)
     scan_into_library(library, [track])
     assert library.get(track) is not None
 
-    result = library_ops.delete_files_permanently(library, [track])
+    result = library_ops.send_to_trash(library, [track])
 
-    assert result.deleted == [track]
+    assert result.trashed == [track]
     assert not result.failed
     assert not track.exists()
     assert library.get(track) is None
 
 
-def test_delete_files_permanently_reports_failures_without_raising(tmp_path):
+def test_send_to_trash_reports_failures_without_raising(tmp_path):
     library = Library(tmp_path / "test.db")
     missing = tmp_path / "does_not_exist.flac"
 
-    result = library_ops.delete_files_permanently(library, [missing])
+    result = library_ops.send_to_trash(library, [missing])
 
-    assert result.deleted == []
+    assert result.trashed == []
     assert len(result.failed) == 1
     assert result.failed[0][0] == missing
 

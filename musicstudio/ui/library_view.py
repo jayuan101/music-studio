@@ -27,7 +27,7 @@ from ..core import library_ops
 from ..core import tags as tags_module
 from ..db import Library, TrackRow, scan_into_library
 from . import theme
-from .common import card, confirm_permanent_delete, format_size, heading, row, section_label, spacer
+from .common import card, confirm_delete, format_size, heading, row, section_label, spacer
 from .duplicates_dialog import DuplicatesDialog
 from .tag_panel import ArtworkView
 
@@ -621,22 +621,24 @@ class LibraryPanel(QWidget):
             )
 
     def _delete_selected(self) -> None:
-        """Permanently delete the selected files from disk, not just the index."""
+        """Remove the selected files from the library and send them to the
+        Recycle Bin -- always undoable from there, so this can be used
+        freely without worrying about a mis-click."""
         paths = self.selected_paths()
         if not paths:
             return
-        if not confirm_permanent_delete(self, paths):
+        if not confirm_delete(self, paths):
             return
 
-        result = library_ops.delete_files_permanently(self.library, paths)
+        result = library_ops.send_to_trash(self.library, paths)
         self.refresh()
         if result.failed:
             failed_text = "; ".join(f"{p.name}: {err}" for p, err in result.failed)
             self.status_label.setText(
-                f"Deleted {len(result.deleted)} file(s); {len(result.failed)} failed: {failed_text}"
+                f"Deleted {len(result.trashed)} file(s); {len(result.failed)} failed: {failed_text}"
             )
         else:
-            self.status_label.setText(f"Deleted {len(result.deleted)} file(s)")
+            self.status_label.setText(f"Deleted {len(result.trashed)} file(s) (sent to Recycle Bin)")
 
     def _find_duplicates(self) -> None:
         """Open a report of tracks that share an artist and title."""

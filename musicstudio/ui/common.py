@@ -18,19 +18,19 @@ from PySide6.QtWidgets import (
 from . import theme
 
 
-def confirm_permanent_delete(parent: QWidget | None, paths: list[Path]) -> bool:
-    """The one "this is forever" confirmation, shared by every delete entry
-    point -- the duplicates dialog and the library view's own Delete action
-    both call this instead of building their own near-identical dialog."""
+def confirm_delete(parent: QWidget | None, paths: list[Path]) -> bool:
+    """The one delete confirmation, shared by every delete entry point --
+    the duplicates dialog and the library view's own Delete action both
+    call this instead of building their own near-identical dialog."""
     names = "\n".join(Path(p).name for p in paths[:10])
     if len(paths) > 10:
         names += f"\n… and {len(paths) - 10} more"
-    reply = QMessageBox.warning(
+    reply = QMessageBox.question(
         parent,
-        "Delete from disk",
-        f"Permanently delete {len(paths)} file(s)?\n\n"
-        "This does not use the Recycle Bin. The files are removed from disk "
-        "immediately, and this app has no way to bring them back.\n\n" + names,
+        "Delete from library",
+        f"Remove {len(paths)} file(s) from the library and send them to the "
+        "Recycle Bin?\n\nYou can restore them from the Recycle Bin if you "
+        "change your mind.\n\n" + names,
         QMessageBox.Yes | QMessageBox.Cancel,
         QMessageBox.Cancel,
     )

@@ -12,6 +12,8 @@ import shutil
 from dataclasses import dataclass, field
 from pathlib import Path
 
+from send2trash import send2trash
+
 from ..db import Library
 from . import probe
 from . import tags as tags_module
@@ -19,30 +21,31 @@ from .convert import unique_destination
 
 
 @dataclass(frozen=True)
-class DeleteResult:
-    deleted: list[Path] = field(default_factory=list)
+class TrashResult:
+    trashed: list[Path] = field(default_factory=list)
     failed: list[tuple[Path, str]] = field(default_factory=list)
 
 
-def delete_files_permanently(library: Library, paths: list[Path]) -> DeleteResult:
-    """Unlink each path from disk and drop its row from the index.
+def send_to_trash(library: Library, paths: list[Path]) -> TrashResult:
+    """Move each path to the OS Recycle Bin / Trash and drop its row from
+    the index.
 
-    Permanent -- there is no trash or soft-delete anywhere in this app.
-    Callers must confirm with the user before calling this (see
-    ui/common.py:confirm_permanent_delete).
+    Unlike a hard delete, this can always be undone by the user restoring
+    the file from the Recycle Bin -- deliberately the only "delete" this app
+    offers, so a mis-click never means an unrecoverable loss.
     """
-    deleted: list[Path] = []
+    trashed: list[Path] = []
     failed: list[tuple[Path, str]] = []
     for path in paths:
         path = Path(path)
         try:
-            path.unlink()
+            send2trash(str(path))
         except OSError as exc:
             failed.append((path, str(exc)))
         else:
             library.remove(path)
-            deleted.append(path)
-    return DeleteResult(deleted=deleted, failed=failed)
+            trashed.append(path)
+    return TrashResult(trashed=trashed, failed=failed)
 
 
 @dataclass(frozen=True)
