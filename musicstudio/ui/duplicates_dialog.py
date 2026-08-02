@@ -81,7 +81,7 @@ class DuplicatesDialog(QDialog):
         self.tree.setColumnWidth(2, 130)
         self.tree.setColumnWidth(3, 90)
         self.tree.setContextMenuPolicy(Qt.CustomContextMenu)
-        self.tree.customContextMenuRequested.connect(self._show_group_context_menu)
+        self.tree.customContextMenuRequested.connect(self._show_context_menu)
         layout.addWidget(self.tree, 1)
 
         self._populate()
@@ -157,10 +157,16 @@ class DuplicatesDialog(QDialog):
             group.tracks.sort(key=key)
         self._populate()
 
-    def _show_group_context_menu(self, position) -> None:
+    def _show_context_menu(self, position) -> None:
         item = self.tree.itemAt(position)
-        if item is None or item.parent() is not None:
-            return  # only a top-level (group header) row offers this
+        if item is None:
+            return
+        if item.parent() is None:
+            self._show_group_context_menu(item, position)
+        else:
+            self._show_row_context_menu(item, position)
+
+    def _show_group_context_menu(self, item: QTreeWidgetItem, position) -> None:
         index = self.tree.indexOfTopLevelItem(item)
         if not (0 <= index < len(self.groups)):
             return
@@ -172,10 +178,48 @@ class DuplicatesDialog(QDialog):
         )
         menu.exec(self.tree.viewport().mapToGlobal(position))
 
+    def _show_row_context_menu(self, item: QTreeWidgetItem, position) -> None:
+        """Delete or move exactly this one copy, independent of any checkbox
+        state -- the quick path when you know you only want to act on a
+        single file rather than managing checkboxes across every group."""
+        path = item.data(0, Qt.UserRole)
+        if path is None:
+            return
+        menu = QMenu(self)
+        menu.addAction("Delete this copy…", lambda: self._delete_single(path))
+        menu.addAction("Move this copy to folder…", lambda: self._move_single(path))
+        menu.exec(self.tree.viewport().mapToGlobal(position))
+
     def _ignore_group(self, group: DuplicateGroup) -> None:
         self.library.ignore_duplicate_group(group.artist, group.title)
         self.groups = [g for g in self.groups if g is not group]
         self._populate()
+
+    def _delete_single(self, path: Path) -> None:
+        if not confirm_permanent_delete(self, [path]):
+            return
+        if self.merge_metadata_check.isChecked():
+            self._merge_metadata_before_delete([path])
+
+        result = library_ops.delete_files_permanently(self.library, [path])
+        self.deleted_paths.extend(result.deleted)
+        self.groups = _drop_deleted(self.groups, result.deleted)
+        self._populate()
+        if result.failed:
+            failed_path, err = result.failed[0]
+            QMessageBox.warning(self, "Delete failed", f"Could not delete {failed_path.name}: {err}")
+
+    def _move_single(self, path: Path) -> None:
+        directory = QFileDialog.getExistingDirectory(self, "Move this copy to")
+        if not directory:
+            return
+        result = library_ops.move_files(self.library, [path], Path(directory))
+        self.moved_paths.extend(result.moved)
+        self.groups = _drop_deleted(self.groups, [old for old, _new in result.moved])
+        self._populate()
+        if result.failed:
+            failed_path, err = result.failed[0]
+            QMessageBox.warning(self, "Move failed", f"Could not move {failed_path.name}: {err}")
 
     # -- deleting -----------------------------------------------------------
     def _checked_paths(self) -> list[Path]:
