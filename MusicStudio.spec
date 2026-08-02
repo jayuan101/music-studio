@@ -69,6 +69,12 @@ a = Analysis(
         # keyring picks its backend at runtime based on the OS; on Windows
         # that is the Credential Locker backend specifically.
         "keyring.backends.Windows",
+        # core/library_ops.py imports this specific backend directly (see
+        # the comment there for why: send2trash's default Windows path
+        # depends on pywin32/COM, which is unreliable to freeze correctly).
+        "send2trash",
+        "send2trash.win",
+        "send2trash.win.legacy",
     ],
     hookspath=[],
     hooksconfig={},

@@ -9,10 +9,24 @@ defines what "delete" and "move" mean, so the two callers cannot drift apart.
 from __future__ import annotations
 
 import shutil
+import sys
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from send2trash import send2trash
+if sys.platform == "win32":
+    # send2trash's default Windows path prefers pywin32's IFileOperation
+    # (send2trash.win.modern), falling back to plain SHFileOperationW only if
+    # pywin32 is missing. pywin32/COM is notoriously unreliable to freeze
+    # correctly with PyInstaller (missing typelib/gen_py data at runtime,
+    # even when the import itself succeeds at build time) -- and a COM
+    # failure at call time raises something that is not an OSError, which
+    # would slip past the except clause below and silently kill the delete
+    # action. Going straight to the ctypes-based SHFileOperationW backend
+    # sidesteps that whole class of failure; it needs nothing beyond
+    # shell32.dll, which every Windows install already has.
+    from send2trash.win.legacy import send2trash
+else:
+    from send2trash import send2trash
 
 from ..db import Library
 from . import probe
@@ -40,7 +54,7 @@ def send_to_trash(library: Library, paths: list[Path]) -> TrashResult:
         path = Path(path)
         try:
             send2trash(str(path))
-        except OSError as exc:
+        except Exception as exc:  # noqa: BLE001 -- one bad file must not abort the whole delete
             failed.append((path, str(exc)))
         else:
             library.remove(path)

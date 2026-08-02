@@ -140,16 +140,25 @@ def apply_update(zip_path: Path) -> None:
 
     exe_path = target_dir / Path(sys.executable).name
     helper = zip_path.parent / "apply_update.bat"
+    log_path = zip_path.parent / "robocopy.log"
     helper.write_text(
         "@echo off\r\n"
         f'set "PID={os.getpid()}"\r\n'
+        # Matches on IMAGENAME too, not just PID -- a bare PID filter would
+        # wait forever if this PID happens to be reused by an unrelated,
+        # longer-lived process before this check runs.
         ":wait\r\n"
-        'tasklist /FI "PID eq %PID%" | find "%PID%" >nul\r\n'
+        'tasklist /FI "PID eq %PID%" /FI "IMAGENAME eq MusicStudio.exe" 2^>nul | find "%PID%" >nul\r\n'
         "if not errorlevel 1 (\r\n"
         "  timeout /t 1 /nobreak >nul\r\n"
         "  goto wait\r\n"
         ")\r\n"
-        f'robocopy "{extract_dir}" "{target_dir}" /MIR /R:5 /W:1 >nul\r\n'
+        # The process table drops the PID slightly before Windows finishes
+        # releasing the exe/DLL file handles -- copying immediately can hit
+        # a locked file (made worse by antivirus scanning the freshly
+        # written new build). A short grace period avoids that race.
+        "timeout /t 2 /nobreak >nul\r\n"
+        f'robocopy "{extract_dir}" "{target_dir}" /MIR /R:10 /W:2 /LOG:"{log_path}" >nul\r\n'
         f'start "" "{exe_path}"\r\n'
         f'rmdir /s /q "{zip_path.parent}"\r\n',
         encoding="utf-8",
