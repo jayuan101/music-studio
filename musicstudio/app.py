@@ -29,6 +29,7 @@ def create_app(argv: list[str] | None = None) -> QApplication:
 def main(argv: list[str] | None = None) -> int:
     ensure_dirs()
     crash_log.install()
+    crash_log.install_qt_message_handler()
     app = create_app(argv)
 
     from .ui.main_window import MainWindow

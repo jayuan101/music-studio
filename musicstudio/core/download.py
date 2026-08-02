@@ -31,6 +31,13 @@ class DownloadError(RuntimeError):
     """Raised when a download cannot be completed."""
 
 
+#: Every extension a downloaded thumbnail can turn up with -- yt-dlp/sites
+#: serve ".jfif" as often as ".jpg" (the same JPEG format, different
+#: extension), plus the occasional GIF or BMP. Anything missing here is a
+#: thumbnail that gets mistaken for the audio download itself, or a sidecar
+#: image left behind uncleaned next to the track forever.
+_THUMBNAIL_EXTENSIONS = (".jpg", ".jpeg", ".jfif", ".png", ".webp", ".gif", ".bmp")
+
 #: Sites whose audio is always lossy, so "convert to FLAC" cannot gain anything.
 _LOSSY_SOURCE_HINT = (
     "Streaming sites deliver compressed audio. Converting it to a lossless "
@@ -456,7 +463,7 @@ def _resolve_downloaded_path(entry: dict, output_dir: Path) -> Path | None:
         # Same stem, different extension after post-processing.
         matches = sorted(
             p for p in output_dir.glob(f"{glob_escape(path.stem)}.*")
-            if p.suffix.lower() not in (".part", ".ytdl", ".jpg", ".png", ".webp")
+            if p.suffix.lower() not in (".part", ".ytdl") + _THUMBNAIL_EXTENSIONS
         )
         if matches:
             return matches[0]
@@ -465,7 +472,7 @@ def _resolve_downloaded_path(entry: dict, output_dir: Path) -> Path | None:
     if title:
         matches = sorted(
             p for p in output_dir.glob(f"{glob_escape(_sanitise_filename(title))}.*")
-            if p.suffix.lower() not in (".part", ".ytdl", ".jpg", ".png", ".webp")
+            if p.suffix.lower() not in (".part", ".ytdl") + _THUMBNAIL_EXTENSIONS
         )
         if matches:
             return matches[0]
@@ -607,7 +614,7 @@ def _apply_download_metadata(
 
 def _load_sidecar_thumbnail(path: Path) -> tags_module.Artwork | None:
     """Pick up the thumbnail image yt-dlp saved next to the audio."""
-    for suffix in (".jpg", ".webp", ".png", ".jpeg"):
+    for suffix in _THUMBNAIL_EXTENSIONS:
         candidate = path.with_suffix(suffix)
         if candidate.is_file():
             try:
@@ -618,7 +625,7 @@ def _load_sidecar_thumbnail(path: Path) -> tags_module.Artwork | None:
 
 
 def _cleanup_sidecar_thumbnails(path: Path) -> None:
-    for suffix in (".jpg", ".webp", ".png", ".jpeg"):
+    for suffix in _THUMBNAIL_EXTENSIONS:
         candidate = path.with_suffix(suffix)
         if candidate.is_file():
             try:

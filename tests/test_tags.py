@@ -156,6 +156,40 @@ def test_merge_missing_tags_ignores_an_unreadable_donor(encoded, tmp_path):
 # ---------------------------------------------------------------------------
 
 
+def test_identifies_a_gif():
+    # Minimal GIF89a header: signature + 16-bit little-endian width/height.
+    header = b"GIF89a" + (200).to_bytes(2, "little") + (100).to_bytes(2, "little")
+    artwork = T.Artwork.from_bytes(header)
+    assert artwork.mime == "image/gif"
+    assert (artwork.width, artwork.height) == (200, 100)
+    assert artwork.extension == ".gif"
+
+
+def test_identifies_a_bmp():
+    # BITMAPFILEHEADER is 14 bytes ("BM" + filesize + 2 reserved + data
+    # offset), then BITMAPINFOHEADER's own header-size field (4 bytes)
+    # before width/height land at offset 18/22.
+    header = (
+        b"BM" + b"\x00" * 12
+        + (40).to_bytes(4, "little")
+        + (300).to_bytes(4, "little", signed=True)
+        + (150).to_bytes(4, "little", signed=True)
+    )
+    artwork = T.Artwork.from_bytes(header)
+    assert artwork.mime == "image/bmp"
+    assert (artwork.width, artwork.height) == (300, 150)
+    assert artwork.extension == ".bmp"
+
+
+def test_a_jfif_file_is_identified_as_jpeg():
+    # .jfif is the same JPEG format under a different extension -- what
+    # matters is that the JPEG magic bytes are recognised regardless of what
+    # the source file happened to be named.
+    jpeg_like = b"\xff\xd8\xff\xe0" + b"\x00" * 20
+    artwork = T.Artwork.from_bytes(jpeg_like)
+    assert artwork.mime == "image/jpeg"
+
+
 def test_untagged_file_reads_as_empty_not_an_error(encoded):
     assert T.read(encoded["flac"]).is_empty() or True  # never raises
 

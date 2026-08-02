@@ -55,9 +55,13 @@ class Artwork:
 
     @property
     def extension(self) -> str:
-        return {"image/png": ".png", "image/jpeg": ".jpg", "image/webp": ".webp"}.get(
-            self.mime, ".jpg"
-        )
+        return {
+            "image/png": ".png",
+            "image/jpeg": ".jpg",
+            "image/webp": ".webp",
+            "image/gif": ".gif",
+            "image/bmp": ".bmp",
+        }.get(self.mime, ".jpg")
 
     @property
     def size_label(self) -> str:
@@ -168,14 +172,16 @@ class TagSet:
 def _identify_image(data: bytes) -> tuple[str, int, int]:
     """Detect an image's MIME type and dimensions from its header bytes.
 
-    Doing this by hand avoids a Pillow dependency in the core engine, and works
-    on the three formats cover art actually uses.
+    Doing this by hand avoids a Pillow dependency in the core engine. Covers
+    every format cover art actually turns up in: PNG/JPEG/WEBP (including
+    ".jfif", which is just JPEG under a different extension -- the JPEG
+    magic bytes already catch it), plus GIF and BMP.
     """
     if data[:8] == b"\x89PNG\r\n\x1a\n" and len(data) >= 24:
         width, height = struct.unpack(">II", data[16:24])
         return "image/png", width, height
 
-    if data[:2] == b"\xff\xd8":  # JPEG
+    if data[:2] == b"\xff\xd8":  # JPEG (and .jfif, the same format)
         index = 2
         while index < len(data) - 9:
             if data[index] != 0xFF:
@@ -202,6 +208,18 @@ def _identify_image(data: bytes) -> tuple[str, int, int]:
             height = int.from_bytes(data[28:30], "little") & 0x3FFF
             return "image/webp", width, height
         return "image/webp", 0, 0
+
+    if data[:6] in (b"GIF87a", b"GIF89a") and len(data) >= 10:
+        width, height = struct.unpack("<HH", data[6:10])
+        return "image/gif", width, height
+
+    if data[:2] == b"BM" and len(data) >= 26:
+        # BITMAPFILEHEADER (14 bytes) then BITMAPINFOHEADER's width/height
+        # (signed 32-bit each, at offsets 18 and 22); a bottom-up bitmap
+        # stores a positive height, top-down a negative one -- either way
+        # the magnitude is what matters for display.
+        width, height = struct.unpack("<ii", data[18:26])
+        return "image/bmp", width, abs(height)
 
     return "image/jpeg", 0, 0
 
@@ -918,6 +936,15 @@ def _write_mp4(audio, tags: TagSet, artwork: Artwork | None) -> None:
     if artwork is not None:
         _discard(atoms, "covr")
         if artwork.data:
+            # Apple's "covr" atom only ever declares JPEG or PNG -- unlike
+            # ID3/FLAC/ASF, MP4 has no third option, so a GIF/BMP/WEBP cover
+            # still gets tagged as JPEG here. The bytes are written as-is
+            # (never re-encoded), so a source that really was JPEG-compatible
+            # displays fine; a true GIF/BMP would need actual image
+            # transcoding to embed correctly in an M4A, which this app does
+            # not do. In practice this only matters for a manually-chosen
+            # local image file -- every online art source and the download
+            # thumbnail path already only ever provide JPEG/PNG/WEBP.
             image_format = (
                 MP4Cover.FORMAT_PNG if artwork.mime == "image/png" else MP4Cover.FORMAT_JPEG
             )
