@@ -382,6 +382,117 @@ def normalise_tags(tags: TagSet, *, album_artist: str | None = None) -> TagSet:
     return updated
 
 
+#: A bracketed "(feat. X)"/"[ft. X]" credit, capturing just the guest list so
+#: it can be pulled back out of a title rather than only detected.
+_FEATURE_IN_TITLE_CAPTURE = re.compile(
+    r"[\(\[]\s*(?:feat|ft|featuring)\b\.?\s*([^)\]]*)[\)\]]",
+    re.IGNORECASE,
+)
+
+
+def _extract_title_features(title: str) -> tuple[str, list[str]]:
+    """Pull a "(feat. X)" credit -- bracketed or bare -- out of a title,
+    returning the cleaned title and the guest list. The reverse of what
+    :func:`normalise_title_features` adds."""
+    if not title:
+        return title, []
+
+    match = _FEATURE_IN_TITLE_CAPTURE.search(title)
+    if match:
+        guests = [
+            g.strip(" )]([-–—")
+            for g in _GUEST_SPLIT.split(match.group(1))
+            if g.strip(" )]([-–—")
+        ]
+        cleaned = (title[: match.start()] + title[match.end() :]).strip()
+        return cleaned, guests
+
+    # An un-bracketed "Song ft. Guest" or "Artist ft. Guest - Song".
+    parts = _FEATURE_SPLIT.split(title, maxsplit=1)
+    if len(parts) == 1:
+        return title, []
+    base = parts[0].strip(" ([-–—,&")
+    guest_text, remainder = _split_at_separator(parts[1].strip(" )]"))
+    guests = [
+        g.strip(" )]([-–—")
+        for g in _GUEST_SPLIT.split(guest_text)
+        if g.strip(" )]([-–—")
+    ]
+    if not guests:
+        return title, []
+    return (remainder if remainder else base), guests
+
+
+def format_artist_with_features(primary: str, guests: list[str]) -> str:
+    """Render a primary artist plus guests as one artist-field string, e.g.
+    ``"Rick Ross feat. T-Pain"`` -- the artist-field counterpart of
+    :func:`format_feature_suffix`, which renders the same list for a title."""
+    if not guests:
+        return primary
+    listed = guests[0] if len(guests) == 1 else f"{', '.join(guests[:-1])} & {guests[-1]}"
+    return f"{primary} feat. {listed}" if primary else listed
+
+
+def move_features_to_artist(tags: TagSet) -> TagSet:
+    """The opposite convention from :func:`normalise_tags`: pull any featured
+    artist out of the title and fold it into the artist field instead,
+    leaving the title clean -- for a library where every performer should be
+    credited on the artist field rather than tucked into the title.
+    """
+    updated = TagSet(**tags.to_dict())
+    updated.artwork = tags.artwork
+
+    artist_primary, artist_guests = split_featured(tags.artist)
+    title_cleaned, title_guests = _extract_title_features(tags.title)
+    title_cleaned = clean_title(title_cleaned, artist_primary or tags.artist)
+
+    guests: list[str] = []
+    for guest in artist_guests + title_guests:
+        if guest and guest not in guests:
+            guests.append(guest)
+
+    updated.title = title_cleaned
+    updated.artist = format_artist_with_features(artist_primary or tags.artist, guests)
+    return updated
+
+
+def move_features_to_artist_library(
+    paths: list[Path], *, context=None, dry_run: bool = False
+) -> list[YtMusicResult]:
+    """Apply :func:`move_features_to_artist` across a set of files, same
+    calling shape as :func:`normalise_library`."""
+    results: list[YtMusicResult] = []
+    total = len(paths)
+    for index, raw_path in enumerate(paths):
+        if context is not None:
+            context.raise_if_cancelled()
+            context.progress(
+                index / total if total else None, f"Feat. to artist: {Path(raw_path).name}"
+            )
+        path = Path(raw_path)
+        try:
+            existing = tags_module.try_read(path)
+            updated = move_features_to_artist(existing)
+            changes = [
+                f"{field}: {getattr(existing, field)!r} -> {getattr(updated, field)!r}"
+                for field in ("title", "artist")
+                if getattr(existing, field) != getattr(updated, field)
+            ]
+            if not changes:
+                results.append(YtMusicResult(path, False, [], "Already in shape"))
+                continue
+            if not dry_run:
+                tags_module.write(path, updated, artwork=existing.artwork)
+            results.append(YtMusicResult(path, True, changes))
+        except Exception as exc:  # noqa: BLE001 -- keep going through the batch
+            results.append(YtMusicResult(path, False, [], f"Failed: {exc}"))
+
+    if context is not None:
+        updated_count = sum(1 for r in results if r.updated)
+        context.progress(1.0, f"Moved feat. to artist for {updated_count} of {total}")
+    return results
+
+
 def _norm_compare(value: str) -> str:
     """Casefold and strip punctuation, for comparing two titles for sameness."""
     return re.sub(r"[^a-z0-9]+", "", (value or "").lower())
