@@ -336,4 +336,54 @@ def test_one_bad_file_does_not_stop_the_batch(tone_flac, tmp_path):
     assert len(results) == 2
     assert not results[0].updated
     assert results[1].updated
-    assert T.read(tone_flac).title == "Numb"
+
+
+# ---------------------------------------------------------------------------
+# move_features_to_artist -- the reverse convention
+# ---------------------------------------------------------------------------
+
+
+def test_moves_a_bracketed_title_feature_into_the_artist():
+    tags = T.TagSet(title="The Boss (feat. T-Pain)", artist="Rick Ross")
+    result = ytmusic.move_features_to_artist(tags)
+    assert result.title == "The Boss"
+    assert result.artist == "Rick Ross feat. T-Pain"
+
+
+def test_moves_multiple_title_guests_into_the_artist():
+    tags = T.TagSet(title="Tap Out (feat. Lil Wayne, Mack Maine & Future)", artist="Birdman")
+    result = ytmusic.move_features_to_artist(tags)
+    assert result.title == "Tap Out"
+    assert result.artist == "Birdman feat. Lil Wayne, Mack Maine & Future"
+
+
+def test_moves_a_bare_ft_from_the_artist_field_too():
+    tags = T.TagSet(title="Some Song", artist="Omarion ft. Usher, Fabolous & Busta Rhymes")
+    result = ytmusic.move_features_to_artist(tags)
+    assert result.title == "Some Song"
+    assert result.artist == "Omarion feat. Usher, Fabolous & Busta Rhymes"
+
+
+def test_a_title_with_no_feature_is_left_alone():
+    tags = T.TagSet(title="Numb", artist="Linkin Park")
+    result = ytmusic.move_features_to_artist(tags)
+    assert result.title == "Numb"
+    assert result.artist == "Linkin Park"
+
+
+def test_move_features_to_artist_library_writes_and_reports(tone_flac):
+    T.write(tone_flac, T.TagSet(title="The Boss (feat. T-Pain)", artist="Rick Ross"))
+    results = ytmusic.move_features_to_artist_library([tone_flac])
+
+    assert len(results) == 1 and results[0].updated
+    written = T.read(tone_flac)
+    assert written.title == "The Boss"
+    assert written.artist == "Rick Ross feat. T-Pain"
+
+
+def test_move_features_to_artist_library_dry_run_changes_nothing(tone_flac):
+    T.write(tone_flac, T.TagSet(title="The Boss (feat. T-Pain)", artist="Rick Ross"))
+    results = ytmusic.move_features_to_artist_library([tone_flac], dry_run=True)
+
+    assert results[0].updated and results[0].changes
+    assert T.read(tone_flac).title == "The Boss (feat. T-Pain)"
