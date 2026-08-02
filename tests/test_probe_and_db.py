@@ -415,3 +415,61 @@ def test_redundant_size_sums_every_copy_but_the_keeper(library, music_folder):
 
     assert group.redundant_size == sum(t.size_bytes for t in group.tracks[1:])
     assert group.redundant_size > 0
+
+
+def test_find_duplicates_keep_criterion_newest_vs_oldest(library, music_folder):
+    T.write(music_folder / "a.flac", T.TagSet(title="Same Song", artist="Same Band"))
+    T.write(music_folder / "b.mp3", T.TagSet(title="Same Song", artist="Same Band"))
+    scan_into_library(library, [music_folder / "a.flac", music_folder / "b.mp3"])
+
+    conn = library._connect()
+    with conn:
+        conn.execute(
+            "UPDATE tracks SET added_at = 100 WHERE filename = 'a.flac'"
+        )
+        conn.execute(
+            "UPDATE tracks SET added_at = 200 WHERE filename = 'b.mp3'"
+        )
+
+    [newest] = library.find_duplicates(keep_criterion="newest")
+    assert newest.tracks[0].path.name == "b.mp3"
+
+    [oldest] = library.find_duplicates(keep_criterion="oldest")
+    assert oldest.tracks[0].path.name == "a.flac"
+
+    # Quality (the default) always prefers the lossless FLAC regardless of age.
+    [by_quality] = library.find_duplicates(keep_criterion="quality")
+    assert by_quality.tracks[0].path.name == "a.flac"
+
+
+def test_ignore_duplicate_group_round_trips(library, music_folder):
+    T.write(music_folder / "a.flac", T.TagSet(title="Same Song", artist="Same Band"))
+    T.write(music_folder / "b.mp3", T.TagSet(title="Same Song", artist="Same Band"))
+    scan_into_library(library, [music_folder / "a.flac", music_folder / "b.mp3"])
+
+    assert len(library.find_duplicates()) == 1
+    library.ignore_duplicate_group("Same Band", "Same Song")
+    assert library.find_duplicates() == []
+    assert len(library.find_duplicates(include_ignored=True)) == 1
+
+
+# ---------------------------------------------------------------------------
+# Auto-trim schema fields
+# ---------------------------------------------------------------------------
+
+
+def test_schema_migration_adds_autotrim_columns(library, music_folder):
+    """A fresh database (or one migrated from schema v1) has the new columns,
+    defaulting to values that never falsely mark a track as already handled."""
+    target = music_folder / "a.flac"
+    scan_into_library(library, [target])
+    row = library.get(target)
+    assert row.source_url == ""
+    assert row.auto_trim_state == "not_applicable"
+
+
+def test_upsert_persists_source_url(library, music_folder):
+    target = music_folder / "a.flac"
+    T.write(target, T.TagSet(title="Song", source_url="https://youtu.be/abc123"))
+    scan_into_library(library, [target])
+    assert library.get(target).source_url == "https://youtu.be/abc123"

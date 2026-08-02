@@ -109,6 +109,48 @@ def test_copy_tags_carries_metadata_and_art_across_formats(encoded, cover_png):
     assert copied.artwork.data == cover_png
 
 
+def test_merge_missing_tags_fills_blanks_from_a_donor(encoded):
+    keeper, donor = encoded["flac"], encoded["opus"]
+    T.write(keeper, T.TagSet(title="Kept Title", artist="Kept Artist"))
+    T.write(donor, T.TagSet(title="Donor Title", artist="Donor Artist", genre="Synthwave"))
+
+    changed = T.merge_missing_tags(keeper, [donor])
+
+    assert changed is True
+    result = T.read(keeper)
+    assert result.title == "Kept Title"       # never overwritten
+    assert result.artist == "Kept Artist"     # never overwritten
+    assert result.genre == "Synthwave"        # filled from the donor
+
+
+def test_merge_missing_tags_fills_missing_artwork(encoded, cover_png):
+    keeper, donor = encoded["flac"], encoded["opus"]
+    T.write(keeper, T.TagSet(title="Kept Title"))
+    T.write(donor, T.TagSet(title="Donor Title"), artwork=T.Artwork.from_bytes(cover_png))
+
+    assert T.merge_missing_tags(keeper, [donor]) is True
+    assert T.read(keeper).artwork.data == cover_png
+
+
+def test_merge_missing_tags_no_op_when_nothing_to_fill(encoded):
+    keeper = encoded["flac"]
+    T.write(keeper, T.TagSet(title="Complete", artist="Band", album="Album", genre="Rock"))
+
+    assert T.merge_missing_tags(keeper, []) is False
+
+
+def test_merge_missing_tags_ignores_an_unreadable_donor(encoded, tmp_path):
+    keeper = encoded["flac"]
+    T.write(keeper, T.TagSet(title="Kept Title"))
+    junk_donor = tmp_path / "junk.mp3"
+    junk_donor.write_bytes(b"not audio")
+
+    # Must not raise -- a bad donor is simply skipped.
+    changed = T.merge_missing_tags(keeper, [junk_donor])
+    assert changed is False
+    assert T.read(keeper).title == "Kept Title"
+
+
 # ---------------------------------------------------------------------------
 # Model behaviour
 # ---------------------------------------------------------------------------

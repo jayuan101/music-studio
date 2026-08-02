@@ -41,6 +41,15 @@ _NOISE_SUFFIX = re.compile(
 _SEPARATORS = (" - ", " – ", " — ")
 
 
+def looks_like_video_title(text: str) -> bool:
+    """True when ``text`` carries a video-rip marker like "(Official Video)".
+
+    Reuses the same pattern guess_from_filename() strips -- the one place
+    this app already recognises the shape of a video-sourced name.
+    """
+    return bool(text) and bool(_NOISE_SUFFIX.search(text))
+
+
 def guess_from_filename(path: str | Path) -> TagSet:
     """Recover title/artist from a filename like 'Artist - Title (Official Audio)'."""
     stem = Path(path).stem

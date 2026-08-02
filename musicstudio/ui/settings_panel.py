@@ -75,6 +75,7 @@ class SettingsPanel(QWidget):
         layout.addWidget(self._build_artwork_card())
         layout.addWidget(self._build_editor_card())
         layout.addWidget(self._build_download_card())
+        layout.addWidget(self._build_autotrim_card())
         layout.addWidget(self._build_ai_card())
         layout.addWidget(self._build_update_card())
         layout.addStretch(1)
@@ -324,6 +325,49 @@ class SettingsPanel(QWidget):
             section_label("Downloads"), form, self.download_thumbnail, self.ytmusic_downloads
         )
 
+    def _build_autotrim_card(self) -> QWidget:
+        self.autotrim_enabled = QCheckBox("Enable auto-trim")
+        self.autotrim_enabled.setToolTip(
+            "Detect and remove leading/trailing silence or logo bumpers from tracks "
+            "that look like they came from a music video. This rewrites the audio "
+            "file in place."
+        )
+        self.autotrim_enabled.toggled.connect(self._on_autotrim_enabled_toggled)
+
+        self.autotrim_new_tracks = QCheckBox("Run automatically after each download")
+        self.autotrim_new_tracks.toggled.connect(self._save)
+
+        self.autotrim_threshold = QDoubleSpinBox()
+        self.autotrim_threshold.setRange(-90.0, -20.0)
+        self.autotrim_threshold.setSuffix(" dB")
+        self.autotrim_threshold.valueChanged.connect(self._save)
+
+        self.autotrim_max_intro = QDoubleSpinBox()
+        self.autotrim_max_intro.setRange(0.0, 60.0)
+        self.autotrim_max_intro.setSuffix(" s")
+        self.autotrim_max_intro.valueChanged.connect(self._save)
+
+        self.autotrim_max_outro = QDoubleSpinBox()
+        self.autotrim_max_outro.setRange(0.0, 60.0)
+        self.autotrim_max_outro.setSuffix(" s")
+        self.autotrim_max_outro.valueChanged.connect(self._save)
+
+        form = QWidget()
+        form_layout = QFormLayout(form)
+        form_layout.setContentsMargins(0, 0, 0, 0)
+        form_layout.setSpacing(8)
+        form_layout.addRow("Silence threshold", self.autotrim_threshold)
+        form_layout.addRow("Max intro to cut", self.autotrim_max_intro)
+        form_layout.addRow("Max outro to cut", self.autotrim_max_outro)
+
+        return card(
+            section_label("Auto-trim"), self.autotrim_enabled, self.autotrim_new_tracks, form
+        )
+
+    def _on_autotrim_enabled_toggled(self, checked: bool) -> None:
+        self.autotrim_new_tracks.setEnabled(checked)
+        self._save()
+
     def _build_ai_card(self) -> QWidget:
         self.ai_ollama_host = QLineEdit()
         self.ai_ollama_host.setPlaceholderText("http://localhost:11434")
@@ -463,6 +507,13 @@ class SettingsPanel(QWidget):
         self.ytmusic_downloads.setChecked(s.ytmusic_format_downloads)
         self.playlist_limit.setValue(s.download_playlist_limit)
 
+        self.autotrim_enabled.setChecked(s.auto_trim_enabled)
+        self.autotrim_new_tracks.setChecked(s.auto_trim_new_tracks)
+        self.autotrim_new_tracks.setEnabled(s.auto_trim_enabled)
+        self.autotrim_threshold.setValue(s.auto_trim_silence_threshold_db)
+        self.autotrim_max_intro.setValue(s.auto_trim_max_intro_s)
+        self.autotrim_max_outro.setValue(s.auto_trim_max_outro_s)
+
         self.ai_ollama_host.setText(s.ai_ollama_host)
         if s.ai_ollama_model:
             self.ai_ollama_model.addItem(s.ai_ollama_model)
@@ -511,6 +562,12 @@ class SettingsPanel(QWidget):
         s.download_embed_thumbnail = self.download_thumbnail.isChecked()
         s.ytmusic_format_downloads = self.ytmusic_downloads.isChecked()
         s.download_playlist_limit = self.playlist_limit.value()
+
+        s.auto_trim_enabled = self.autotrim_enabled.isChecked()
+        s.auto_trim_new_tracks = self.autotrim_new_tracks.isChecked()
+        s.auto_trim_silence_threshold_db = self.autotrim_threshold.value()
+        s.auto_trim_max_intro_s = self.autotrim_max_intro.value()
+        s.auto_trim_max_outro_s = self.autotrim_max_outro.value()
 
         s.ai_ollama_host = self.ai_ollama_host.text().strip() or s.ai_ollama_host
         s.ai_ollama_model = self.ai_ollama_model.currentText().strip()

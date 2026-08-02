@@ -18,7 +18,7 @@ from .core import probe
 from .core import tags as tags_module
 from .core.formats import IMPORTABLE_EXTENSIONS
 
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
 
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS tracks (
@@ -54,7 +54,43 @@ CREATE TABLE IF NOT EXISTS tracks (
 CREATE INDEX IF NOT EXISTS idx_tracks_album  ON tracks(albumartist, album);
 CREATE INDEX IF NOT EXISTS idx_tracks_artist ON tracks(artist);
 CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);
+
+CREATE TABLE IF NOT EXISTS ignored_duplicate_groups (
+    artist_key TEXT NOT NULL,
+    title_key  TEXT NOT NULL,
+    ignored_at REAL NOT NULL DEFAULT (strftime('%s','now')),
+    PRIMARY KEY (artist_key, title_key)
+);
 """
+
+#: Statements to run when upgrading from schema version (key - 1) to key.
+#: Applied in order inside _migrate(); a rerun tolerates "duplicate column"
+#: since ALTER TABLE ADD COLUMN has no IF NOT EXISTS form in SQLite.
+_MIGRATIONS: dict[int, tuple[str, ...]] = {
+    2: (
+        "ALTER TABLE tracks ADD COLUMN source_url TEXT NOT NULL DEFAULT ''",
+        "ALTER TABLE tracks ADD COLUMN auto_trim_state TEXT NOT NULL DEFAULT 'not_applicable'",
+        "CREATE INDEX IF NOT EXISTS idx_tracks_autotrim ON tracks(auto_trim_state)",
+    ),
+}
+
+
+def _migrate(conn: sqlite3.Connection) -> None:
+    row = conn.execute(
+        "SELECT value FROM meta WHERE key = 'schema_version'"
+    ).fetchone()
+    current = int(row["value"]) if row else 0
+    for version in range(current + 1, SCHEMA_VERSION + 1):
+        for statement in _MIGRATIONS.get(version, ()):
+            try:
+                conn.execute(statement)
+            except sqlite3.OperationalError as exc:
+                if "duplicate column" not in str(exc).lower():
+                    raise
+    conn.execute(
+        "INSERT OR REPLACE INTO meta(key, value) VALUES('schema_version', ?)",
+        (str(SCHEMA_VERSION),),
+    )
 
 
 @dataclass
@@ -81,6 +117,9 @@ class TrackRow:
     has_artwork: bool
     artwork_width: int
     size_bytes: int = 0
+    added_at: float = 0.0
+    source_url: str = ""
+    auto_trim_state: str = "not_applicable"
 
     @property
     def display_title(self) -> str:
@@ -218,6 +257,39 @@ def _normalized_key(text: str) -> str:
     return " ".join(text.split()).casefold()
 
 
+def _quality_sort_key(t: "TrackRow") -> tuple:
+    return (
+        not t.is_lossless,
+        -(t.bit_depth or 0),
+        -(t.sample_rate or 0),
+        -(t.bitrate or 0),
+        -(t.size_bytes or 0),
+    )
+
+
+def _newest_sort_key(t: "TrackRow") -> tuple:
+    return (-(t.added_at or 0),)
+
+
+def _oldest_sort_key(t: "TrackRow") -> tuple:
+    return (t.added_at or 0,)
+
+
+_KEEP_CRITERIA = {
+    "quality": _quality_sort_key,
+    "newest": _newest_sort_key,
+    "oldest": _oldest_sort_key,
+}
+
+
+def sort_key_for_criterion(criterion: str):
+    """The sort key find_duplicates() uses to pick each group's keeper for
+    ``criterion`` ("quality" / "newest" / "oldest"), exposed so the duplicates
+    dialog can re-sort an already-fetched group in place when the user
+    changes the auto-select dropdown, without re-querying the database."""
+    return _KEEP_CRITERIA.get(criterion, _quality_sort_key)
+
+
 @dataclass
 class DuplicateGroup:
     """Two or more indexed tracks that appear to be the same song.
@@ -255,10 +327,7 @@ class Library:
         self._local = threading.local()
         with self._connect() as conn:
             conn.executescript(_SCHEMA)
-            conn.execute(
-                "INSERT OR REPLACE INTO meta(key, value) VALUES('schema_version', ?)",
-                (str(SCHEMA_VERSION),),
-            )
+            _migrate(conn)
 
     # -- connection -----------------------------------------------------
     def _connect(self) -> sqlite3.Connection:
@@ -298,8 +367,8 @@ class Library:
                     title, artist, album, albumartist, date, genre,
                     track_number, disc_number,
                     codec, duration, sample_rate, bit_depth, channels, bitrate, is_lossless,
-                    has_artwork, artwork_width
-                ) VALUES (?,?,?,?, ?,?,?,?,?,?, ?,?, ?,?,?,?,?,?,?, ?,?)
+                    has_artwork, artwork_width, source_url
+                ) VALUES (?,?,?,?, ?,?,?,?,?,?, ?,?, ?,?,?,?,?,?,?, ?,?,?)
                 ON CONFLICT(path) DO UPDATE SET
                     filename=excluded.filename, size_bytes=excluded.size_bytes,
                     modified_time=excluded.modified_time,
@@ -310,7 +379,8 @@ class Library:
                     sample_rate=excluded.sample_rate, bit_depth=excluded.bit_depth,
                     channels=excluded.channels, bitrate=excluded.bitrate,
                     is_lossless=excluded.is_lossless,
-                    has_artwork=excluded.has_artwork, artwork_width=excluded.artwork_width
+                    has_artwork=excluded.has_artwork, artwork_width=excluded.artwork_width,
+                    source_url=excluded.source_url
                 """,
                 (
                     str(path), path.name, size, modified,
@@ -318,10 +388,23 @@ class Library:
                     tags.track_number, tags.disc_number,
                     info.codec, info.duration, info.sample_rate, info.bit_depth,
                     info.channels, info.bitrate, int(info.is_lossless),
-                    int(tags.has_artwork()), artwork.width if artwork else 0,
+                    int(tags.has_artwork()), artwork.width if artwork else 0, tags.source_url,
                 ),
             )
             return cursor.lastrowid or 0
+
+    def set_auto_trim_state(self, path: Path, state: str) -> None:
+        """Persist auto-trim's verdict for one track without touching anything else.
+
+        Deliberately not part of upsert()'s ON CONFLICT clause -- a rescan
+        must never reset a track's trim state back to 'not_applicable'.
+        """
+        conn = self._connect()
+        with conn:
+            conn.execute(
+                "UPDATE tracks SET auto_trim_state = ? WHERE path = ?",
+                (state, str(Path(path).resolve())),
+            )
 
     def remove(self, path: Path) -> None:
         conn = self._connect()
@@ -365,6 +448,9 @@ class Library:
             has_artwork=bool(row["has_artwork"]),
             artwork_width=row["artwork_width"],
             size_bytes=row["size_bytes"],
+            added_at=row["added_at"],
+            source_url=row["source_url"],
+            auto_trim_state=row["auto_trim_state"],
         )
 
     def all_tracks(self) -> list[TrackRow]:
@@ -449,7 +535,9 @@ class Library:
             "with_art": row["with_art"],
         }
 
-    def find_duplicates(self) -> list[DuplicateGroup]:
+    def find_duplicates(
+        self, *, keep_criterion: str = "quality", include_ignored: bool = False
+    ) -> list[DuplicateGroup]:
         """Group indexed tracks that appear to be the same song.
 
         Grouped by normalized (artist, title) since that is what this app can
@@ -460,12 +548,22 @@ class Library:
         together as one giant false "duplicate". This will not catch two
         files with the same audio under different tags -- that would need
         decoding and comparing the audio itself, which this does not attempt.
+
+        ``keep_criterion`` picks which copy sorts first (the recommended
+        keeper) within each group -- see sort_key_for_criterion(). Groups the
+        user has previously marked "ignore" are left out unless
+        ``include_ignored`` is set.
         """
+        ignored = self.ignored_duplicate_groups() if not include_ignored else set()
+        sort_key = sort_key_for_criterion(keep_criterion)
+
         groups: dict[tuple[str, str], list[TrackRow]] = {}
         for track in self.all_tracks():
             artist_key = _normalized_key(track.artist or track.albumartist)
             title_key = _normalized_key(track.title)
             if not artist_key or not title_key:
+                continue
+            if (artist_key, title_key) in ignored:
                 continue
             groups.setdefault((artist_key, title_key), []).append(track)
 
@@ -473,21 +571,46 @@ class Library:
         for tracks in groups.values():
             if len(tracks) < 2:
                 continue
-            tracks.sort(
-                key=lambda t: (
-                    not t.is_lossless,
-                    -(t.bit_depth or 0),
-                    -(t.sample_rate or 0),
-                    -(t.bitrate or 0),
-                    -(t.size_bytes or 0),
-                )
-            )
+            tracks.sort(key=sort_key)
             result.append(
                 DuplicateGroup(artist=tracks[0].artist, title=tracks[0].title, tracks=tracks)
             )
 
         result.sort(key=lambda g: (_normalized_key(g.artist), _normalized_key(g.title)))
         return result
+
+    def ignore_duplicate_group(self, artist: str, title: str) -> None:
+        """Mark a (artist, title) duplicate group so find_duplicates() stops
+        surfacing it -- e.g. two genuinely different live/studio takes that
+        happen to share a title."""
+        conn = self._connect()
+        with conn:
+            conn.execute(
+                "INSERT OR IGNORE INTO ignored_duplicate_groups(artist_key, title_key) VALUES (?, ?)",
+                (_normalized_key(artist), _normalized_key(title)),
+            )
+
+    def ignored_duplicate_groups(self) -> set[tuple[str, str]]:
+        conn = self._connect()
+        rows = conn.execute(
+            "SELECT artist_key, title_key FROM ignored_duplicate_groups"
+        ).fetchall()
+        return {(r["artist_key"], r["title_key"]) for r in rows}
+
+    def autotrim_candidates(self) -> list[TrackRow]:
+        """Indexed tracks that look video-sourced and have not already been
+        trimmed or explicitly skipped -- the working set for a bulk
+        "Auto-trim all" pass."""
+        from .core.autotrim import looks_like_video_source
+
+        return [
+            row
+            for row in self.all_tracks()
+            if row.auto_trim_state not in ("applied", "skipped")
+            and looks_like_video_source(
+                source_url=row.source_url, title=row.title, filename=row.path.name
+            )
+        ]
 
 
 # ---------------------------------------------------------------------------
