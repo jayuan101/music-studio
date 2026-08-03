@@ -84,3 +84,51 @@ def test_move_files_reports_failures_without_raising(tmp_path):
 
     assert result.moved == []
     assert len(result.failed) == 1
+
+
+def test_rename_to_tags_renames_in_place_and_reindexes(tmp_path):
+    library = Library(tmp_path / "test.db")
+    track = make_tone(tmp_path / "Some Downloaded Filename.flac", duration=1.0)
+    T.write(track, T.TagSet(title="Midnight Drive", artist="The Rearview"))
+    scan_into_library(library, [track])
+
+    result = library_ops.rename_to_tags(library, [track])
+
+    assert len(result.renamed) == 1
+    old_path, new_path = result.renamed[0]
+    assert old_path == track
+    assert new_path.name == "The Rearview - Midnight Drive.flac"
+    assert new_path.parent == track.parent
+    assert new_path.exists()
+    assert not old_path.exists()
+    assert library.get(old_path) is None
+    row = library.get(new_path)
+    assert row is not None
+    assert row.title == "Midnight Drive"
+
+
+def test_rename_to_tags_leaves_an_already_correct_name_alone(tmp_path):
+    library = Library(tmp_path / "test.db")
+    track = make_tone(tmp_path / "The Rearview - Midnight Drive.flac", duration=1.0)
+    T.write(track, T.TagSet(title="Midnight Drive", artist="The Rearview"))
+    scan_into_library(library, [track])
+
+    result = library_ops.rename_to_tags(library, [track])
+
+    assert result.renamed == []
+    assert result.unchanged == [track]
+    assert track.exists()
+
+
+def test_rename_to_tags_avoids_a_name_collision(tmp_path):
+    library = Library(tmp_path / "test.db")
+    track = make_tone(tmp_path / "Some Downloaded Filename.flac", duration=1.0)
+    T.write(track, T.TagSet(title="Midnight Drive", artist="The Rearview"))
+    scan_into_library(library, [track])
+    (tmp_path / "The Rearview - Midnight Drive.flac").write_bytes(b"already here")
+
+    result = library_ops.rename_to_tags(library, [track])
+
+    assert len(result.renamed) == 1
+    _old, new_path = result.renamed[0]
+    assert new_path.name == "The Rearview - Midnight Drive (2).flac"

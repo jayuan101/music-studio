@@ -31,6 +31,7 @@ else:
 
 from ..db import Library
 from . import crash_log
+from . import organise
 from . import probe
 from . import tags as tags_module
 from .convert import unique_destination
@@ -116,3 +117,51 @@ def move_files(library: Library, paths: list[Path], destination_dir: Path) -> Mo
             library.upsert(target, info, tags_module.try_read(target))
         moved.append((path, target))
     return MoveResult(moved=moved, failed=failed)
+
+
+@dataclass(frozen=True)
+class RenameResult:
+    renamed: list[tuple[Path, Path]] = field(default_factory=list)
+    unchanged: list[Path] = field(default_factory=list)
+    failed: list[tuple[Path, str]] = field(default_factory=list)
+
+
+def rename_to_tags(
+    library: Library, paths: list[Path], *, pattern: str = "{artist} - {title}"
+) -> RenameResult:
+    """Rename each file, in its current folder, to match its own tags.
+
+    Exists for the gap between "the library shows the right title/artist"
+    and "the file on disk is still called whatever the downloader named
+    it" -- tags.py and organise.py already agree on how a name is built and
+    parsed, this just applies that to a file already sitting in the
+    library rather than a fresh download. Only the filename changes, never
+    the folder, so this never turns into an unrequested reorganisation.
+    """
+    renamed: list[tuple[Path, Path]] = []
+    unchanged: list[Path] = []
+    failed: list[tuple[Path, str]] = []
+    for path in paths:
+        path = Path(path)
+        try:
+            tags = tags_module.try_read(path)
+            rendered = organise.render_template(pattern, tags)
+        except (tags_module.TagError, organise.TemplateError, OSError) as exc:
+            failed.append((path, str(exc)))
+            continue
+        new_name = organise.sanitise_component(rendered) + path.suffix
+        if new_name == path.name:
+            unchanged.append(path)
+            continue
+        target = unique_destination(path.with_name(new_name))
+        try:
+            path.rename(target)
+        except OSError as exc:
+            failed.append((path, str(exc)))
+            continue
+        library.remove(path)
+        info = probe.try_probe(target)
+        if info is not None:
+            library.upsert(target, info, tags_module.try_read(target))
+        renamed.append((path, target))
+    return RenameResult(renamed=renamed, unchanged=unchanged, failed=failed)
