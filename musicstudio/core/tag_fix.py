@@ -50,6 +50,121 @@ def looks_like_video_title(text: str) -> bool:
     return bool(text) and bool(_NOISE_SUFFIX.search(text))
 
 
+#: Same noise words as _NOISE_SUFFIX, but for when the junk made it into the
+#: *tag* itself with no surrounding brackets at all (e.g. a title tag of
+#: literally "Song Name Official Video"). Kept separate and narrower than a
+#: bare match on every _NOISE_SUFFIX word -- "official" is required before
+#: video/audio so a real title ending in a word like "HD" or "Clean" is never
+#: touched, and "lyrics" is trusted bare since it is not a real word an actual
+#: song title ends on in practice.
+_BARE_OFFICIAL_SUFFIX = re.compile(
+    r"\s+official\s+(music\s+)?(video|audio|lyric\s*video)\s*$", re.IGNORECASE
+)
+_BARE_LYRICS_SUFFIX = re.compile(r"\s+lyrics?(\s+video)?\s*$", re.IGNORECASE)
+
+#: A YouTube channel handle sitting in the artist field, e.g. "HueyVEVO" --
+#: the uploader's channel name, not a credited artist.
+_CHANNEL_ARTIST_SUFFIX = re.compile(r"vevo$", re.IGNORECASE)
+
+
+def clean_title_noise(title: str) -> str:
+    """Strip a video/lyrics marker from ``title``, bracketed or bare.
+
+    Unlike guess_from_filename() (which only ever sees this noise inside
+    brackets, because that is how it typically shows up in a *filename*),
+    a downloaded file's *tag* can carry the same junk with no brackets at
+    all. Never returns an empty string -- if stripping would leave nothing,
+    the original is kept rather than losing the title entirely.
+    """
+    if not title:
+        return title
+    cleaned = _NOISE_SUFFIX.sub(" ", title).strip()
+    for pattern in (_BARE_OFFICIAL_SUFFIX, _BARE_LYRICS_SUFFIX):
+        stripped = pattern.sub("", cleaned).strip()
+        if stripped:
+            cleaned = stripped
+    return cleaned or title
+
+
+def looks_like_channel_artist(artist: str, title: str = "") -> bool:
+    """True when ``artist`` is a YouTube channel name rather than a real
+    credit -- either a "...VEVO"-style handle, or literally a copy of the
+    title (seen when a downloader had nothing better to put there)."""
+    if not artist:
+        return False
+    if _CHANNEL_ARTIST_SUFFIX.search(artist.strip()):
+        return True
+    if title and artist.strip().lower() == title.strip().lower():
+        return True
+    return False
+
+
+@dataclass
+class JunkTagResult:
+    """Outcome of cleaning one file's already-present (but wrong) tags."""
+
+    path: Path
+    updated: bool
+    changes: list[str]
+    reason: str = ""
+
+
+def fix_junk_tags_library(
+    paths: list[Path],
+    *,
+    context=None,
+) -> list[JunkTagResult]:
+    """Clean junk that survived into *existing* title/artist values.
+
+    fix_library_tags() above only ever fills a *blank* field -- by design, it
+    never touches a value that is already there, however wrong. That leaves
+    two common kinds of YouTube-download residue completely untouched: noise
+    words baked into the title tag itself ("Song Name Official Video", no
+    brackets) and a channel handle sitting in the artist field ("HueyVEVO")
+    instead of a real credit. Both are fixed here using only the filename as
+    a second opinion -- e.g. "Huey - Pop, Lock & Drop It (Official Video).flac"
+    already parses cleanly to artist "Huey" via guess_from_filename() -- so
+    no network lookup is needed and the result stays deterministic.
+    """
+    results: list[JunkTagResult] = []
+    total = len(paths)
+
+    for index, path in enumerate(paths):
+        path = Path(path)
+        if context is not None:
+            context.raise_if_cancelled()
+            context.progress(index / total if total else None, f"Cleaning tags: {path.name}")
+        try:
+            existing = tags_module.try_read(path)
+            new_title = clean_title_noise(existing.title)
+            new_artist = existing.artist
+            changes = []
+
+            if new_title != existing.title:
+                changes.append(f'title: "{existing.title}" -> "{new_title}"')
+
+            if looks_like_channel_artist(existing.artist, new_title):
+                candidate = guess_from_filename(path).artist
+                if candidate and not looks_like_channel_artist(candidate, new_title):
+                    new_artist = candidate
+                    changes.append(f'artist: "{existing.artist}" -> "{new_artist}"')
+
+            if not changes:
+                results.append(JunkTagResult(path, False, [], "Nothing to clean"))
+                continue
+
+            updated = existing.merged_with(TagSet(title=new_title, artist=new_artist), overwrite=True)
+            tags_module.write(path, updated, artwork=existing.artwork)
+            results.append(JunkTagResult(path, True, changes))
+        except Exception as exc:  # noqa: BLE001 -- keep going through the batch
+            results.append(JunkTagResult(path, False, [], f"Failed: {exc}"))
+
+    if context is not None:
+        updated_count = sum(1 for r in results if r.updated)
+        context.progress(1.0, f"Cleaned {updated_count} of {total}")
+    return results
+
+
 def guess_from_filename(path: str | Path) -> TagSet:
     """Recover title/artist from a filename like 'Artist - Title (Official Audio)'."""
     stem = Path(path).stem

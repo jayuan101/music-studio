@@ -210,3 +210,71 @@ def test_fix_file_tags_fills_blanks_from_filename_first(tmp_path, monkeypatch):
 
     assert result.artist == "Shubh"
     assert result.title == "Cheques"
+
+
+# ---------------------------------------------------------------------------
+# clean_title_noise / looks_like_channel_artist / fix_junk_tags_library
+# ---------------------------------------------------------------------------
+
+
+def test_clean_title_noise_strips_a_bare_official_video_suffix():
+    assert tag_fix.clean_title_noise("I Got Bitches Official Video") == "I Got Bitches"
+
+
+def test_clean_title_noise_strips_a_bare_lyrics_suffix():
+    assert tag_fix.clean_title_noise("My Last lyrics") == "My Last"
+
+
+def test_clean_title_noise_still_handles_the_bracketed_form():
+    assert tag_fix.clean_title_noise("Be Real (Official Audio)") == "Be Real"
+
+
+def test_clean_title_noise_leaves_a_clean_title_alone():
+    assert tag_fix.clean_title_noise("Cheques") == "Cheques"
+
+
+def test_clean_title_noise_never_returns_empty():
+    # A title that is nothing *but* noise must not collapse to "".
+    assert tag_fix.clean_title_noise("Official Video") == "Official Video"
+
+
+def test_looks_like_channel_artist_flags_a_vevo_handle():
+    assert tag_fix.looks_like_channel_artist("HueyVEVO")
+
+
+def test_looks_like_channel_artist_flags_artist_equal_to_title():
+    assert tag_fix.looks_like_channel_artist("Yugioh - Opening Theme", "Yugioh - Opening Theme")
+
+
+def test_looks_like_channel_artist_is_false_for_a_real_artist():
+    assert not tag_fix.looks_like_channel_artist("Shubh", "Cheques")
+
+
+def test_fix_junk_tags_library_cleans_title_and_channel_artist(tmp_path):
+    from tests.conftest import make_tone
+
+    path = make_tone(tmp_path / "Huey - Pop, Lock & Drop It (Official Video).flac")
+    T.write(path, T.TagSet(title="Pop, Lock & Drop It", artist="HueyVEVO"))
+
+    results = tag_fix.fix_junk_tags_library([path])
+
+    assert len(results) == 1
+    assert results[0].updated
+    fixed = T.try_read(path)
+    assert fixed.title == "Pop, Lock & Drop It"
+    assert fixed.artist == "Huey"
+
+
+def test_fix_junk_tags_library_leaves_clean_tags_alone(tmp_path):
+    from tests.conftest import make_tone
+
+    path = make_tone(tmp_path / "Shubh - Cheques.flac")
+    T.write(path, T.TagSet(title="Cheques", artist="Shubh"))
+
+    results = tag_fix.fix_junk_tags_library([path])
+
+    assert len(results) == 1
+    assert not results[0].updated
+    fixed = T.try_read(path)
+    assert fixed.title == "Cheques"
+    assert fixed.artist == "Shubh"
