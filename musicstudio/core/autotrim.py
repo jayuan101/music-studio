@@ -12,7 +12,6 @@ as happily eat the first few seconds of a normal song.
 
 from __future__ import annotations
 
-import os
 import re
 from dataclasses import dataclass
 from enum import Enum
@@ -265,7 +264,7 @@ def autotrim_track(
             tags_module.write(result.destination, tags, artwork=tags.artwork)
         except tags_module.TagError:
             pass
-        os.replace(result.destination, path)
+        convert_module.replace_atomically(result.destination, path)
     except BaseException:
         tmp_destination.unlink(missing_ok=True)
         raise

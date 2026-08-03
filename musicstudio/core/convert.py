@@ -474,6 +474,49 @@ def unique_destination(path: Path) -> Path:
     raise FileExistsError(f"Could not find a free filename near {path}")
 
 
+#: A "save/trim in place" write is briefly blocked by the exact same class of
+#: transient lock as a delete -- Windows Search Indexer or antivirus
+#: real-time scanning the destination -- confirmed via debug.log for the
+#: delete path. Retrying absorbs it instead of losing the encoded result.
+_REPLACE_RETRIES = 5
+_REPLACE_RETRY_DELAY_S = 0.5
+
+
+def replace_atomically(tmp_path: Path, dest_path: Path) -> None:
+    """Atomically replace ``dest_path`` with ``tmp_path``, the last step of
+    every "encode to a temp file, then swap it in" in-place edit.
+
+    Retries briefly on a transient lock, and clears a stray read-only
+    attribute on the destination if that -- not a lock -- turns out to be
+    what a PermissionError (WinError 5) is actually about; a read-only flag
+    is a one-shot fix, not something a delay would ever resolve on its own.
+    """
+    import os
+    import stat
+    import time
+
+    last_exc: OSError | None = None
+    for attempt in range(_REPLACE_RETRIES):
+        try:
+            os.replace(tmp_path, dest_path)
+            return
+        except PermissionError as exc:
+            last_exc = exc
+            try:
+                mode = dest_path.stat().st_mode
+                if not mode & stat.S_IWRITE:
+                    dest_path.chmod(mode | stat.S_IWRITE)
+            except OSError:
+                pass
+            if attempt < _REPLACE_RETRIES - 1:
+                time.sleep(_REPLACE_RETRY_DELAY_S)
+        except OSError as exc:
+            last_exc = exc
+            if attempt < _REPLACE_RETRIES - 1:
+                time.sleep(_REPLACE_RETRY_DELAY_S)
+    raise last_exc
+
+
 def convert(
     request: ConvertRequest,
     *,

@@ -28,6 +28,7 @@ from PySide6.QtWidgets import (
 
 from ..config import get_settings
 from ..core import convert as convert_module
+from ..core import crash_log
 from ..core import edit as edit_module
 from ..core import formats, probe
 from ..core.edit import ChannelMode, EditSpec, EqBand, GainMode, Region, SilenceMode
@@ -792,10 +793,9 @@ class EditorPanel(QWidget):
         self.export_button.setEnabled(False)
 
         def work(context, source, spec, profile):
-            import os
-
             from ..core import tags as tags_module
 
+            crash_log.debug(f"save_in_place: start for {source.name}")
             original_tags = tags_module.try_read(source)
             tmp_destination = source.with_name(f".{source.stem}.tmp{profile.extension}")
             request = convert_module.ConvertRequest(
@@ -813,8 +813,10 @@ class EditorPanel(QWidget):
                     )
                 except tags_module.TagError:
                     pass
-                os.replace(result.destination, source)
-            except BaseException:
+                convert_module.replace_atomically(result.destination, source)
+                crash_log.debug(f"save_in_place: succeeded for {source.name}")
+            except BaseException as exc:
+                crash_log.debug(f"save_in_place: failed for {source.name}: {exc!r}")
                 tmp_destination.unlink(missing_ok=True)
                 raise
             return source
