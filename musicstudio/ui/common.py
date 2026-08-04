@@ -5,6 +5,7 @@ from __future__ import annotations
 from pathlib import Path
 
 from PySide6.QtCore import Qt
+from PySide6.QtGui import QPixmap
 from PySide6.QtWidgets import (
     QFrame,
     QHBoxLayout,
@@ -17,6 +18,19 @@ from PySide6.QtWidgets import (
 
 from . import theme
 from ..core import crash_log
+from ..core.tags import strip_broken_png_icc_profile
+
+
+def safe_pixmap(data: bytes) -> QPixmap:
+    """Load cover art bytes into a QPixmap, defusing a known crash first.
+
+    Every place that hands raw artwork bytes to Qt goes through here rather
+    than calling QPixmap.loadFromData() directly, so the ICC-profile fix
+    only has to exist once.
+    """
+    pixmap = QPixmap()
+    pixmap.loadFromData(strip_broken_png_icc_profile(data))
+    return pixmap
 
 
 def confirm_delete(parent: QWidget | None, paths: list[Path]) -> bool:

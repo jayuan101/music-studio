@@ -224,6 +224,42 @@ def _identify_image(data: bytes) -> tuple[str, int, int]:
     return "image/jpeg", 0, 0
 
 
+_PNG_SIGNATURE = b"\x89PNG\r\n\x1a\n"
+
+
+def strip_broken_png_icc_profile(data: bytes) -> bytes:
+    """Drop a PNG's ``iCCP`` (embedded colour profile) chunk if present.
+
+    Some downloaded cover art carries an iCCP chunk with misaligned internal
+    tag offsets -- valid enough for most viewers, but a crash this session
+    (Qt's bundled libpng warning "ICC profile tag start not a multiple of 4"
+    immediately before a native abort in ucrtbase.dll) traced back to exactly
+    this. The chunk is optional and purely a colour-management hint; dropping
+    it does not change a single pixel, and Qt already logged warnings on it
+    rather than actually using it, so removing it avoids the risky parse path
+    entirely. A no-op for anything that isn't a PNG or has no such chunk.
+    """
+    if data[:8] != _PNG_SIGNATURE:
+        return data
+    out = bytearray(_PNG_SIGNATURE)
+    pos = 8
+    removed = False
+    while pos + 8 <= len(data):
+        length = int.from_bytes(data[pos : pos + 4], "big")
+        chunk_type = data[pos + 4 : pos + 8]
+        chunk_end = pos + 8 + length + 4  # length + type + data + CRC
+        if chunk_end > len(data):
+            break
+        if chunk_type == b"iCCP":
+            removed = True
+        else:
+            out += data[pos:chunk_end]
+        pos = chunk_end
+        if chunk_type == b"IEND":
+            break
+    return bytes(out) if removed else data
+
+
 # ---------------------------------------------------------------------------
 # Field name maps
 # ---------------------------------------------------------------------------
