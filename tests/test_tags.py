@@ -181,6 +181,41 @@ def test_identifies_a_bmp():
     assert artwork.extension == ".bmp"
 
 
+def _insert_png_chunk(png: bytes, chunk_type: bytes, chunk_data: bytes, *, after: bytes = b"IHDR") -> bytes:
+    """Splice one extra chunk into an existing PNG, right after ``after``."""
+    import struct
+    import zlib
+
+    marker = png.index(after) - 4  # back up to that chunk's length field
+    length = struct.unpack(">I", png[marker : marker + 4])[0]
+    insert_at = marker + 4 + 4 + length + 4  # length + type + data + CRC
+    body = chunk_type + chunk_data
+    new_chunk = struct.pack(">I", len(chunk_data)) + body + struct.pack(">I", zlib.crc32(body) & 0xFFFFFFFF)
+    return png[:insert_at] + new_chunk + png[insert_at:]
+
+
+def test_strip_broken_png_icc_profile_removes_the_chunk(cover_png):
+    with_icc = _insert_png_chunk(cover_png, b"iCCP", b"icc\x00\x00" + b"\x00" * 20)
+    assert b"iCCP" in with_icc
+
+    cleaned = T.strip_broken_png_icc_profile(with_icc)
+
+    assert b"iCCP" not in cleaned
+    # Still a well-formed PNG the rest of the pipeline can read.
+    artwork = T.Artwork.from_bytes(cleaned)
+    assert artwork.mime == "image/png"
+    assert artwork.width > 0 and artwork.height > 0
+
+
+def test_strip_broken_png_icc_profile_is_a_noop_without_one(cover_png):
+    assert T.strip_broken_png_icc_profile(cover_png) == cover_png
+
+
+def test_strip_broken_png_icc_profile_ignores_non_png_data():
+    jpeg_like = b"\xff\xd8\xff\xe0not really a jpeg"
+    assert T.strip_broken_png_icc_profile(jpeg_like) == jpeg_like
+
+
 def test_a_jfif_file_is_identified_as_jpeg():
     # .jfif is the same JPEG format under a different extension -- what
     # matters is that the JPEG magic bytes are recognised regardless of what

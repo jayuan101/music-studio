@@ -26,7 +26,7 @@ from ..core import tag_fix as tag_fix_module
 from ..core import tags as tags_module
 from . import theme
 from .widgets.art_picker import choose_artwork
-from .common import card, heading, row, section_label, spacer
+from .common import card, heading, row, safe_pixmap, section_label, spacer
 
 ART_PREVIEW_SIZE = 190
 
@@ -52,8 +52,8 @@ class ArtworkView(QLabel):
         )
 
     def set_art(self, data: bytes) -> None:
-        pixmap = QPixmap()
-        if not data or not pixmap.loadFromData(data):
+        pixmap = safe_pixmap(data) if data else QPixmap()
+        if not data or pixmap.isNull():
             self.clear_art()
             return
         self.setPixmap(

@@ -20,6 +20,7 @@ from PySide6.QtWidgets import QHBoxLayout, QLabel, QPushButton, QStyle, QVBoxLay
 
 from .. import theme
 from ...core import tags as tags_module
+from ..common import safe_pixmap
 from .player import Player
 
 THUMBNAIL_SIZE = 42
@@ -257,8 +258,8 @@ class NowPlayingBar(QWidget):
         self.title_label.setText(info.display_title)
         self.artist_label.setText(info.display_artist)
         if info.has_artwork():
-            pixmap = QPixmap()
-            if pixmap.loadFromData(info.artwork.data):
+            pixmap = safe_pixmap(info.artwork.data)
+            if not pixmap.isNull():
                 self.art_label.setPixmap(
                     pixmap.scaled(
                         THUMBNAIL_SIZE, THUMBNAIL_SIZE, Qt.KeepAspectRatio, Qt.SmoothTransformation

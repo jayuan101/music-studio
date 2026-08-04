@@ -9,7 +9,6 @@ than to whichever provider answered first.
 from __future__ import annotations
 
 from PySide6.QtCore import Qt
-from PySide6.QtGui import QPixmap
 from PySide6.QtWidgets import (
     QDialog,
     QDialogButtonBox,
@@ -22,6 +21,7 @@ from PySide6.QtWidgets import (
 
 from ...core.artwork import ArtworkCandidate
 from .. import theme
+from ..common import safe_pixmap
 
 THUMBNAIL_SIZE = 170
 
@@ -42,8 +42,8 @@ class _CandidateTile(QWidget):
         self.image = QLabel()
         self.image.setFixedSize(THUMBNAIL_SIZE, THUMBNAIL_SIZE)
         self.image.setAlignment(Qt.AlignCenter)
-        pixmap = QPixmap()
-        if pixmap.loadFromData(candidate.data):
+        pixmap = safe_pixmap(candidate.data)
+        if not pixmap.isNull():
             self.image.setPixmap(
                 pixmap.scaled(
                     THUMBNAIL_SIZE, THUMBNAIL_SIZE,
