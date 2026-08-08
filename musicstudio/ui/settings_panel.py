@@ -337,6 +337,16 @@ class SettingsPanel(QWidget):
         self.autotrim_new_tracks = QCheckBox("Run automatically after each download")
         self.autotrim_new_tracks.toggled.connect(self._save)
 
+        self.autotrim_detect_speech = QCheckBox("Also try to detect spoken intros/outros (experimental)")
+        self.autotrim_detect_speech.setToolTip(
+            "Uses local voice detection to also catch a spoken intro or outro that "
+            "isn't silent, like someone talking or a jingle before the song starts. "
+            "It cannot always tell singing from speech, so a vocal-led intro can "
+            "occasionally get trimmed too -- still bounded by the caps below, never "
+            "more. Try it on a few tracks before leaving it on for everything."
+        )
+        self.autotrim_detect_speech.toggled.connect(self._save)
+
         self.autotrim_threshold = QDoubleSpinBox()
         self.autotrim_threshold.setRange(-90.0, -20.0)
         self.autotrim_threshold.setSuffix(" dB")
@@ -361,7 +371,11 @@ class SettingsPanel(QWidget):
         form_layout.addRow("Max outro to cut", self.autotrim_max_outro)
 
         return card(
-            section_label("Auto-trim"), self.autotrim_enabled, self.autotrim_new_tracks, form
+            section_label("Auto-trim"),
+            self.autotrim_enabled,
+            self.autotrim_new_tracks,
+            self.autotrim_detect_speech,
+            form,
         )
 
     def _on_autotrim_enabled_toggled(self, checked: bool) -> None:
@@ -510,6 +524,7 @@ class SettingsPanel(QWidget):
         self.autotrim_enabled.setChecked(s.auto_trim_enabled)
         self.autotrim_new_tracks.setChecked(s.auto_trim_new_tracks)
         self.autotrim_new_tracks.setEnabled(s.auto_trim_enabled)
+        self.autotrim_detect_speech.setChecked(s.auto_trim_detect_speech)
         self.autotrim_threshold.setValue(s.auto_trim_silence_threshold_db)
         self.autotrim_max_intro.setValue(s.auto_trim_max_intro_s)
         self.autotrim_max_outro.setValue(s.auto_trim_max_outro_s)
@@ -565,6 +580,7 @@ class SettingsPanel(QWidget):
 
         s.auto_trim_enabled = self.autotrim_enabled.isChecked()
         s.auto_trim_new_tracks = self.autotrim_new_tracks.isChecked()
+        s.auto_trim_detect_speech = self.autotrim_detect_speech.isChecked()
         s.auto_trim_silence_threshold_db = self.autotrim_threshold.value()
         s.auto_trim_max_intro_s = self.autotrim_max_intro.value()
         s.auto_trim_max_outro_s = self.autotrim_max_outro.value()

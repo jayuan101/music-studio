@@ -6,6 +6,7 @@ import subprocess
 
 import pytest
 
+from musicstudio.config import Settings
 from musicstudio.core import autotrim
 from musicstudio.core import ffmpeg
 from musicstudio.core import tags as T
@@ -14,6 +15,25 @@ from musicstudio.db import Library
 from .conftest import make_tone, requires_ffmpeg
 
 pytestmark = requires_ffmpeg
+
+
+# ---------------------------------------------------------------------------
+# AutoTrimSettings.from_settings
+# ---------------------------------------------------------------------------
+
+
+def test_from_settings_maps_every_field():
+    settings = Settings(
+        auto_trim_silence_threshold_db=-42.0,
+        auto_trim_max_intro_s=7.0,
+        auto_trim_max_outro_s=9.0,
+        auto_trim_detect_speech=True,
+    )
+    trim_settings = autotrim.AutoTrimSettings.from_settings(settings)
+    assert trim_settings.threshold_db == -42.0
+    assert trim_settings.max_intro_s == 7.0
+    assert trim_settings.max_outro_s == 9.0
+    assert trim_settings.detect_speech is True
 
 
 # ---------------------------------------------------------------------------

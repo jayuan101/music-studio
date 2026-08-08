@@ -18,6 +18,7 @@ from enum import Enum
 from pathlib import Path
 from urllib.parse import urlparse
 
+from ..config import Settings
 from . import convert as convert_module
 from . import ffmpeg, formats
 from . import tag_fix
@@ -74,6 +75,19 @@ class AutoTrimSettings:
     max_outro_s: float = 12.0
     min_silence_duration_s: float = 0.3
     min_trim_s: float = 1.0
+    #: Also try to recognise spoken (non-music) intros/outros, not just
+    #: silence. Off by default -- see core/speech.py for why.
+    detect_speech: bool = False
+
+    @classmethod
+    def from_settings(cls, settings: Settings) -> "AutoTrimSettings":
+        """Build from the user's Preferences rather than these defaults."""
+        return cls(
+            threshold_db=settings.auto_trim_silence_threshold_db,
+            max_intro_s=settings.auto_trim_max_intro_s,
+            max_outro_s=settings.auto_trim_max_outro_s,
+            detect_speech=settings.auto_trim_detect_speech,
+        )
 
 
 @dataclass(frozen=True)
@@ -180,6 +194,26 @@ def analyse(
     spans = detect_silence(
         path, threshold_db=settings.threshold_db, min_duration=settings.min_silence_duration_s
     )
+
+    if settings.detect_speech:
+        # Imported lazily so a missing/broken onnxruntime install never
+        # becomes a hard dependency of ordinary silence-only auto-trim.
+        from . import speech as speech_module
+
+        spans = spans + speech_module.speech_spans_in_window(
+            path, duration_s=settings.max_intro_s, track_duration=info.duration
+        )
+        spans = spans + speech_module.speech_spans_in_window(
+            path, duration_s=settings.max_outro_s, track_duration=info.duration, from_end=True
+        )
+        # Silence and speech detecting two slightly-gapped pieces of what is
+        # really one continuous run of non-music (e.g. silence, then
+        # talking, then a beat of quiet before the music starts) must be
+        # combined into one span, or compute_trim_region -- which only ever
+        # looks at a single leading and a single trailing span -- would only
+        # ever trim the first piece.
+        spans = speech_module.merge_spans(spans)
+
     return compute_trim_region(
         spans,
         info.duration,

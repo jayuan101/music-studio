@@ -374,9 +374,12 @@ class MainWindow(QMainWindow):
         settings = get_settings()
         if not (settings.auto_trim_enabled and settings.auto_trim_new_tracks) or not paths:
             return
+        trim_settings = autotrim_module.AutoTrimSettings.from_settings(settings)
 
         def work(context, targets):
-            return autotrim_module.autotrim_library(targets, library=self.library, context=context)
+            return autotrim_module.autotrim_library(
+                targets, library=self.library, settings=trim_settings, context=context
+            )
 
         job = self.jobs.submit_func(
             f"Auto-trimming {len(paths)} new track(s)", work, paths, category="autotrim"
@@ -387,12 +390,13 @@ class MainWindow(QMainWindow):
         if not paths:
             self.status_message.setText("Nothing selected to auto-trim")
             return
+        trim_settings = autotrim_module.AutoTrimSettings.from_settings(get_settings())
 
         def work(context, targets):
             # An explicit selection always re-evaluates, ignoring a prior
             # applied/skipped state and the video-source heuristic gate.
             return autotrim_module.autotrim_library(
-                targets, library=self.library, context=context, force=True
+                targets, library=self.library, settings=trim_settings, context=context, force=True
             )
 
         job = self.jobs.submit_func(

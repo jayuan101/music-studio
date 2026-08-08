@@ -39,6 +39,14 @@ a = Analysis(
         [(str(PROJECT_ROOT / "assets" / "icon.ico"), "assets")]
         if (PROJECT_ROOT / "assets" / "icon.ico").is_file()
         else []
+    )
+    + (
+        # The Silero VAD model core/speech.py loads for auto-trim's optional
+        # spoken-intro/outro detection. Also looked up at runtime relative
+        # to the bundle, same as the icon above.
+        [(str(PROJECT_ROOT / "assets" / "silero_vad.onnx"), "assets")]
+        if (PROJECT_ROOT / "assets" / "silero_vad.onnx").is_file()
+        else []
     ),
     hiddenimports=[
         # yt-dlp loads its 1700+ extractors dynamically, so static analysis
@@ -75,6 +83,11 @@ a = Analysis(
         "send2trash",
         "send2trash.win",
         "send2trash.win.legacy",
+        # core/speech.py's local voice-activity detection. onnxruntime's C
+        # extension loader is not always caught by static analysis, same
+        # reasoning as the yt_dlp/mutagen entries above.
+        "onnxruntime",
+        "onnxruntime.capi.onnxruntime_pybind11_state",
     ],
     hookspath=[],
     hooksconfig={},
@@ -102,7 +115,11 @@ a = Analysis(
         "PySide6.QtPdf", "PySide6.QtPdfWidgets", "PySide6.QtTextToSpeech",
         "PySide6.QtRemoteObjects", "PySide6.QtScxml", "PySide6.QtStateMachine",
         "PySide6.QtSpatialAudio", "PySide6.QtNetworkAuth", "PySide6.QtCanvasPainter",
-        "tkinter", "matplotlib", "numpy", "scipy", "PIL", "pytest",
+        # NOTE: numpy is NOT excluded (it used to be) -- onnxruntime needs it
+        # at runtime for core/speech.py's voice detection. Excluding it here
+        # would build fine and only break, confusingly, the first time that
+        # code path actually runs.
+        "tkinter", "matplotlib", "scipy", "PIL", "pytest",
     ],
     win_no_prefer_redirects=False,
     win_private_assemblies=False,
