@@ -2,7 +2,20 @@
 
 from __future__ import annotations
 
+import os
 import sys
+
+# Qt6 supports pluggable QtMultimedia backends; on Windows both "ffmpeg" and
+# the native "windows" (Media Foundation) backends get bundled, and Qt's own
+# default selection has picked ffmpeg here -- confirmed via the startup log
+# ("Using Qt multimedia with FFmpeg version...") and via ffmpegmediaplugin.dll
+# showing up in a crash dump's thread stack. Media Foundation is the OS's own,
+# far more battle-tested decoder (it's what Windows Media Player etc. use) and
+# is all playback of an already-converted library file needs -- this app's own
+# ffmpeg binary handles every encode/decode that actually requires it,
+# entirely separately from QtMultimedia. Must be set before the first
+# QMediaPlayer is constructed, so as early as possible.
+os.environ.setdefault("QT_MEDIA_BACKEND", "windows")
 
 from PySide6.QtCore import Qt
 from PySide6.QtWidgets import QApplication
