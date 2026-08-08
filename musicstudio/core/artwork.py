@@ -502,11 +502,15 @@ def find_artwork(
     size: int | None = None,
     settings: Settings | None = None,
     use_cache: bool = True,
+    ignore_cached_miss: bool = False,
 ) -> ArtworkCandidate | None:
     """Look up cover art, trying every enabled provider in order of accuracy.
 
     Results and misses are both cached on disk, so a repeated library scan
-    costs nothing and does not hammer free services.
+    costs nothing and does not hammer free services. Pass
+    ``ignore_cached_miss=True`` for a deliberate, user-initiated retry (e.g.
+    the Library page's "Update artwork" button) where a stale "nothing was
+    found last time" answer should never stand in for actually trying again.
     """
     settings = settings or get_settings()
     size = size or settings.artwork_preferred_size
@@ -522,7 +526,7 @@ def find_artwork(
             return ArtworkCandidate(
                 data=cached, source="cache", url="", width=art.width, height=art.height, score=1.0
             )
-        if is_cached_miss(cache_artist, cache_album, size):
+        if not ignore_cached_miss and is_cached_miss(cache_artist, cache_album, size):
             return None
 
     candidate = None
@@ -651,7 +655,16 @@ def update_file_artwork(
         context.progress(None, f"Looking up art for {album or existing.title}…")
 
     candidate = find_artwork(
-        artist, album, title=existing.title, settings=settings, use_cache=not force
+        artist,
+        album,
+        title=existing.title,
+        settings=settings,
+        use_cache=not force,
+        # This function only ever runs because a user explicitly asked for
+        # art on this file (button click or assistant command) -- a stale
+        # "nothing was found last time" answer must never stand in for
+        # actually retrying.
+        ignore_cached_miss=True,
     )
     if candidate is None:
         return ArtworkUpdate(path, False, "No cover art found")

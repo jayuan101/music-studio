@@ -332,6 +332,25 @@ def test_clear_cache_removes_entries(monkeypatch, cover_png):
     assert artwork.read_cache("A", "B", get_settings().artwork_preferred_size) is None
 
 
+def test_ignore_cached_miss_requeries_instead_of_trusting_a_stale_miss(monkeypatch, cover_png):
+    """A deliberate retry (ignore_cached_miss=True) must not be blocked by an
+    earlier automatic lookup's cached "nothing found" answer."""
+    install_client(monkeypatch, {
+        "musicbrainz.org": MB_EMPTY,
+        "itunes.apple.com": FakeResponse(json_data={"results": []}),
+    })
+    assert artwork.find_artwork("Nobody", "Nothing") is None  # records a miss
+
+    client = install_client(monkeypatch, {
+        "musicbrainz.org": MB_HIT,
+        "coverartarchive.org": FakeResponse(content=cover_png),
+    })
+    found = artwork.find_artwork("Nobody", "Nothing", ignore_cached_miss=True)
+    assert found is not None
+    assert found.source == "Cover Art Archive"
+    assert any("musicbrainz" in url for url, _ in client.calls)
+
+
 # ---------------------------------------------------------------------------
 # Rate limiting
 # ---------------------------------------------------------------------------
@@ -394,6 +413,27 @@ def test_update_skips_files_that_already_have_good_art(monkeypatch, tone_flac, c
     result = artwork.update_file_artwork(tone_flac)
     assert not result.updated
     assert "Already has" in result.reason
+
+
+def test_update_retries_even_after_an_earlier_cached_miss(monkeypatch, tone_flac, cover_png):
+    """The Library page's "Update artwork" button is a deliberate retry -- an
+    earlier failed lookup for this artist/album must not silently block it."""
+    T.write(tone_flac, T.TagSet(artist="The Rearview", album="Neon Cartography"))
+    install_client(monkeypatch, {
+        "musicbrainz.org": MB_EMPTY,
+        "itunes.apple.com": FakeResponse(json_data={"results": []}),
+    })
+    first = artwork.update_file_artwork(tone_flac)
+    assert not first.updated
+    assert "No cover art found" in first.reason
+
+    install_client(monkeypatch, {
+        "musicbrainz.org": MB_HIT,
+        "coverartarchive.org": FakeResponse(content=cover_png),
+    })
+    second = artwork.update_file_artwork(tone_flac)
+    assert second.updated
+    assert T.read(tone_flac).artwork.data == cover_png
 
 
 def test_update_needs_something_to_search_with(tone_flac):
