@@ -143,6 +143,7 @@ def test_silence_shorter_than_min_trim_is_ignored():
     [
         ("https://www.youtube.com/watch?v=abc", "", "", True),
         ("https://youtu.be/abc", "", "", True),
+        ("https://soundcloud.com/someone/a-song", "", "", True),
         ("", "Some Song (Official Video)", "", True),
         ("", "", "Some Song [Official Audio].flac", True),
         ("", "Normal Song", "track.flac", False),

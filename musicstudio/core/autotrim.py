@@ -34,13 +34,17 @@ class AutoTrimState(str, Enum):
     SKIPPED = "skipped"
 
 
-#: Hosts that only ever serve video-first content -- a track carrying one of
-#: these as its source_url almost certainly started life as a music video.
+#: Hosts where a downloaded track commonly carries junk someone else added --
+#: a video's talking intro, or (just as often on SoundCloud) a reposter's own
+#: shoutout/tag stinger before or after the actual song. A track carrying one
+#: of these as its source_url is worth checking for that, the same way a
+#: video rip is.
 _VIDEO_HOSTS = frozenset(
     {
         "youtube.com", "www.youtube.com", "m.youtube.com", "youtu.be",
         "music.youtube.com", "vimeo.com", "www.vimeo.com",
         "dailymotion.com", "www.dailymotion.com",
+        "soundcloud.com", "www.soundcloud.com", "m.soundcloud.com",
     }
 )
 
