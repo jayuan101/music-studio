@@ -2,10 +2,12 @@
 
 from __future__ import annotations
 
+import subprocess
+import sys
 from pathlib import Path
 
-from PySide6.QtCore import Qt
-from PySide6.QtGui import QPixmap
+from PySide6.QtCore import QUrl, Qt
+from PySide6.QtGui import QDesktopServices, QPixmap
 from PySide6.QtWidgets import (
     QFrame,
     QHBoxLayout,
@@ -172,6 +174,27 @@ class NoteList(QWidget):
             label.setWordWrap(True)
             self._layout.addWidget(label)
         self.setVisible(self._layout.count() > 0)
+
+
+def reveal_in_file_manager(path: Path) -> None:
+    """Open the OS file manager with ``path`` selected, so "where did it
+    save?" has a one-click answer instead of just a log line.
+
+    ``path`` may be a file (gets selected/highlighted) or a directory (gets
+    opened). On Windows this uses Explorer's "/select," switch for files,
+    which is the standard way to reveal-and-highlight rather than just
+    opening the containing folder; other platforms fall back to just
+    opening the folder, since there's no equivalent single cross-platform API.
+    """
+    path = Path(path)
+    if sys.platform == "win32":
+        if path.is_file():
+            subprocess.Popen(["explorer", "/select,", str(path)])
+        else:
+            subprocess.Popen(["explorer", str(path)])
+        return
+    target = path if path.is_dir() else path.parent
+    QDesktopServices.openUrl(QUrl.fromLocalFile(str(target)))
 
 
 def format_duration(seconds: float) -> str:
