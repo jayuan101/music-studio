@@ -9,6 +9,7 @@ from PySide6.QtGui import QColor, QPixmap
 from PySide6.QtWidgets import (
     QAbstractItemView,
     QFileDialog,
+    QFormLayout,
     QHBoxLayout,
     QHeaderView,
     QLabel,
@@ -35,6 +36,18 @@ from .tag_panel import ArtworkView
 #: Smaller than the Tags & art page's own artwork box -- this is a
 #: secondary, at-a-glance reference, not the primary editing view.
 LIBRARY_ART_PREVIEW_SIZE = 140
+#: Wide enough for the artwork box plus a column of tag fields beside it.
+DETAILS_PANEL_WIDTH = 260
+
+#: (label, TagSet attribute) shown in the details panel, in order.
+_DETAIL_FIELDS = [
+    ("Title", "title"),
+    ("Artist", "artist"),
+    ("Album", "album"),
+    ("Album artist", "albumartist"),
+    ("Year", "date"),
+    ("Genre", "genre"),
+]
 
 
 class _LibraryArtworkPreview(ArtworkView):
@@ -381,44 +394,78 @@ class LibraryPanel(QWidget):
     def all_paths(self) -> list[Path]:
         return [t.path for t in (self.model.track_at(r) for r in range(self.model.rowCount())) if t]
 
-    # -- artwork preview --------------------------------------------------
+    # -- details panel (artwork + tags) ------------------------------------
     def _build_artwork_preview(self) -> QWidget:
         self.preview_art = _LibraryArtworkPreview()
-        self.preview_label = QLabel("Select a track to preview its artwork")
+        self.preview_label = QLabel("Select a track to see its artwork and tags")
         self.preview_label.setObjectName("Hint")
         self.preview_label.setWordWrap(True)
         self.preview_label.setAlignment(Qt.AlignCenter)
+
+        self.detail_fields: dict[str, QLabel] = {}
+        fields_widget = QWidget()
+        form = QFormLayout(fields_widget)
+        form.setContentsMargins(0, 0, 0, 0)
+        form.setSpacing(4)
+        form.setLabelAlignment(Qt.AlignLeft)
+        for label_text, attr in _DETAIL_FIELDS:
+            value_label = QLabel("—")
+            value_label.setWordWrap(True)
+            form.addRow(f"{label_text}:", value_label)
+            self.detail_fields[attr] = value_label
+        fields_widget.setVisible(False)
+        self.detail_fields_widget = fields_widget
+
+        self.detail_edit_button = QPushButton("Edit…")
+        self.detail_edit_button.setToolTip("Open this track on the Tags & art page to edit it")
+        self.detail_edit_button.clicked.connect(
+            lambda: self.tags_requested.emit(self.selected_paths())
+        )
+        self.detail_edit_button.setVisible(False)
 
         content = QWidget()
         content_layout = QVBoxLayout(content)
         content_layout.setContentsMargins(0, 0, 0, 0)
         content_layout.setSpacing(8)
-        content_layout.addWidget(section_label("Artwork"))
+        content_layout.addWidget(section_label("Details"))
         content_layout.addWidget(self.preview_art, 0, Qt.AlignHCenter)
         content_layout.addWidget(self.preview_label)
+        content_layout.addWidget(fields_widget)
+        content_layout.addWidget(self.detail_edit_button)
         content_layout.addStretch(1)
 
         panel = card(content)
-        panel.setFixedWidth(LIBRARY_ART_PREVIEW_SIZE + 48)
+        panel.setFixedWidth(DETAILS_PANEL_WIDTH)
         return panel
 
     def _refresh_artwork_preview(self, paths: list[Path]) -> None:
         if not paths:
             self.preview_art.clear_art()
-            self.preview_label.setText("Select a track to preview its artwork")
+            self.preview_label.setText("Select a track to see its artwork and tags")
+            self.preview_label.setVisible(True)
+            self.detail_fields_widget.setVisible(False)
+            self.detail_edit_button.setVisible(False)
             return
         if len(paths) > 1:
             self.preview_art.clear_art()
             self.preview_label.setText(f"{len(paths)} tracks selected")
+            self.preview_label.setVisible(True)
+            self.detail_fields_widget.setVisible(False)
+            self.detail_edit_button.setVisible(True)
             return
 
         tags = tags_module.try_read(paths[0])
         if tags.has_artwork():
             self.preview_art.set_art(tags.artwork.data)
-            self.preview_label.setText(Path(paths[0]).name)
         else:
             self.preview_art.clear_art()
-            self.preview_label.setText(f"No artwork\n\n{Path(paths[0]).name}")
+
+        self.preview_label.setVisible(False)
+        for attr, value_label in self.detail_fields.items():
+            value = getattr(tags, attr, "") or "—"
+            value_label.setText(str(value))
+        self.detail_fields_widget.setVisible(True)
+        self.detail_edit_button.setVisible(True)
 
     # -- events ---------------------------------------------------------
     def _on_selection_changed(self, *_) -> None:

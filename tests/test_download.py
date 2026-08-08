@@ -330,3 +330,78 @@ def test_a_thumbnail_entry_missing_width_does_not_crash():
         ]
     }
     assert download._best_thumbnail(entry) == "https://i.ytimg.com/vi/abc/large.jpg"
+
+
+# ---------------------------------------------------------------------------
+# _unique_destination / _adopt_preview_source -- "Keep" adopting an
+# already-fetched preview file instead of re-downloading it.
+# ---------------------------------------------------------------------------
+
+
+def test_unique_destination_is_unchanged_when_nothing_collides(tmp_path):
+    target = tmp_path / "Song.flac"
+    assert download._unique_destination(target) == target
+
+
+def test_unique_destination_avoids_collisions(tmp_path):
+    (tmp_path / "Song.flac").write_bytes(b"x")
+    (tmp_path / "Song (2).flac").write_bytes(b"x")
+    result = download._unique_destination(tmp_path / "Song.flac")
+    assert result == tmp_path / "Song (3).flac"
+
+
+def test_adopt_preview_source_copies_without_touching_the_original(tmp_path):
+    source_dir = tmp_path / "preview"
+    source_dir.mkdir()
+    output_dir = tmp_path / "library"
+    output_dir.mkdir()  # download() creates this before calling _adopt_preview_source
+    source = source_dir / "Song.flac"
+    source.write_bytes(b"audio-bytes")
+
+    dest = download._adopt_preview_source(source, output_dir)
+
+    assert dest == output_dir / "Song.flac"
+    assert dest.read_bytes() == b"audio-bytes"
+    assert source.exists()  # the temp preview file is left alone
+
+
+def test_adopt_preview_source_carries_sidecar_thumbnail(tmp_path):
+    source_dir = tmp_path / "preview"
+    source_dir.mkdir()
+    output_dir = tmp_path / "library"
+    output_dir.mkdir()
+    source = source_dir / "Song.flac"
+    source.write_bytes(b"audio-bytes")
+    (source_dir / "Song.jpg").write_bytes(b"thumb-bytes")
+
+    dest = download._adopt_preview_source(source, output_dir)
+
+    assert (dest.with_suffix(".jpg")).read_bytes() == b"thumb-bytes"
+
+
+def test_download_with_source_skips_yt_dlp_and_tags_the_copy(tmp_path, monkeypatch):
+    def fail_if_called(*_a, **_k):
+        raise AssertionError("yt-dlp should not be invoked when request.source is set")
+
+    monkeypatch.setattr(download, "_fetch_from_url", fail_if_called)
+
+    from .conftest import make_tone
+
+    source = make_tone(tmp_path / "preview" / "Song.flac")
+    request = download.DownloadRequest(
+        url="https://example.com/watch",
+        output_dir=tmp_path / "library",
+        source=source,
+        source_entry={"title": "Real Title", "artist": "Real Artist"},
+    )
+
+    result = download.download(request)
+
+    assert len(result.tracks) == 1
+    track = result.tracks[0]
+    assert track.path.parent == tmp_path / "library"
+    assert source.exists()  # copied, not moved
+
+    from musicstudio.core import tags as T
+
+    assert T.read(track.path).title == "Real Title"

@@ -20,7 +20,7 @@ from PySide6.QtWidgets import (
 )
 
 from .. import APP_NAME, __version__
-from ..config import ensure_dirs, get_settings
+from ..config import clear_preview_cache, ensure_dirs, get_settings
 from ..core import artwork as artwork_module
 from ..core import autotrim as autotrim_module
 from ..core import ffmpeg
@@ -71,6 +71,9 @@ class MainWindow(QMainWindow):
     def __init__(self) -> None:
         super().__init__()
         ensure_dirs()
+        # Wipe any preview leftovers a previous session's crash left behind --
+        # nothing from a previous session is still running to race against.
+        clear_preview_cache()
         self.settings = get_settings()
         self.library = Library()
         self.jobs = JobQueue(max_concurrent=2)
@@ -471,5 +474,6 @@ class MainWindow(QMainWindow):
     def closeEvent(self, event) -> None:
         self.jobs.cancel_all()
         self.jobs.wait_for_done(3000)
+        clear_preview_cache()
         self.library.close()
         super().closeEvent(event)

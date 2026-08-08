@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import json
 import os
+import shutil
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -31,14 +32,46 @@ DEFAULT_OUTPUT_DIR = Path(_dirs.user_music_dir or Path.home() / "Music") / APP_N
 ARTWORK_CACHE_DIR = CACHE_DIR / "artwork"
 #: Scratch space for intermediate renders and waveform peak files.
 TEMP_DIR = CACHE_DIR / "tmp"
+#: Where a download is fetched to for "preview and decide" auditioning,
+#: before the user clicks Keep. Never a permanent home for a file.
+PREVIEW_CACHE_DIR = TEMP_DIR / "download_preview"
 
 _SETTINGS_FILE = CONFIG_DIR / "settings.json"
 
 
 def ensure_dirs() -> None:
     """Create every directory the app writes to. Safe to call repeatedly."""
-    for path in (CONFIG_DIR, DATA_DIR, CACHE_DIR, ARTWORK_CACHE_DIR, TEMP_DIR, DEFAULT_OUTPUT_DIR):
+    for path in (
+        CONFIG_DIR,
+        DATA_DIR,
+        CACHE_DIR,
+        ARTWORK_CACHE_DIR,
+        TEMP_DIR,
+        PREVIEW_CACHE_DIR,
+        DEFAULT_OUTPUT_DIR,
+    ):
         path.mkdir(parents=True, exist_ok=True)
+
+
+def clear_preview_cache() -> None:
+    """Best-effort wipe of everything under ``PREVIEW_CACHE_DIR``.
+
+    Called explicitly at app startup and shutdown -- not folded into
+    ``ensure_dirs()``, which is documented safe-to-call-repeatedly and
+    should never have a destructive side effect. A file can be briefly
+    locked by playback or another process; skipping over failures here is
+    fine because the next startup's wipe will catch anything left behind.
+    """
+    if not PREVIEW_CACHE_DIR.is_dir():
+        return
+    for child in PREVIEW_CACHE_DIR.iterdir():
+        try:
+            if child.is_dir():
+                shutil.rmtree(child)
+            else:
+                child.unlink()
+        except OSError:
+            pass
 
 
 @dataclass

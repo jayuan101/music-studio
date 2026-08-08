@@ -17,6 +17,7 @@ rather than implying an upgrade.
 from __future__ import annotations
 
 import re
+import shutil
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -64,6 +65,13 @@ class DownloadRequest:
     playlist_limit: int = 0
     #: Look up proper cover art after downloading.
     fetch_artwork: bool = False
+    #: An already-fetched file to adopt into ``output_dir`` instead of
+    #: re-downloading -- used to "keep" a preview the user has already
+    #: auditioned, without hitting the network a second time.
+    source: Path | None = None
+    #: The yt-dlp metadata captured when ``source`` was first fetched, so tags
+    #: can be rebuilt without re-querying the site.
+    source_entry: dict = field(default_factory=dict)
 
 
 @dataclass
@@ -80,6 +88,9 @@ class DownloadedTrack:
     source_bitrate: int = 0
     converted: bool = False
     notes: list[str] = field(default_factory=list)
+    #: The raw yt-dlp metadata entry this track was produced from, kept so a
+    #: later "Keep" can adopt the file without re-fetching it.
+    raw_entry: dict = field(default_factory=dict, repr=False)
 
 
 @dataclass
@@ -347,14 +358,85 @@ def download(
     subsequent conversion are reported as separate phases so the progress bar
     does not appear to stall.
     """
-    import yt_dlp
-
     settings = settings or get_settings()
     output_dir = Path(request.output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
 
     result = DownloadResult()
     downloaded_paths: list[tuple[Path, dict]] = []
+
+    if request.source is not None:
+        dest = _adopt_preview_source(request.source, output_dir)
+        downloaded_paths = [(dest, request.source_entry or {})]
+    else:
+        downloaded_paths, result.playlist_title, result.warnings = _fetch_from_url(
+            request, output_dir, context=context
+        )
+
+    if not downloaded_paths:
+        raise DownloadError("The download produced no audio files")
+
+    total_items = len(downloaded_paths)
+    for index, (path, entry) in enumerate(downloaded_paths):
+        if context is not None:
+            context.raise_if_cancelled()
+            base = 0.7 + (index / total_items) * 0.3
+            context.progress(base, f"Processing {path.name[:50]}")
+        track = _process_download(path, entry, request, settings, context=context)
+        track.raw_entry = entry
+        result.tracks.append(track)
+
+    if context is not None:
+        context.progress(1.0, f"Finished {len(result.tracks)} track(s)")
+    return result
+
+
+def _adopt_preview_source(source: Path, output_dir: Path) -> Path:
+    """Copy an already-fetched file (and any sidecar thumbnail) into
+    ``output_dir`` instead of downloading it again.
+
+    Copies rather than moves: ``source`` may still be open for playback in
+    the Now Playing bar, and Windows will refuse to rename/delete a file
+    that's open without share-delete. A copy needs only read access, which
+    playback already has, so "Keep" can run while the preview keeps playing
+    uninterrupted.
+    """
+    dest = _unique_destination(output_dir / source.name)
+    shutil.copy2(source, dest)
+    for suffix in _THUMBNAIL_EXTENSIONS:
+        sidecar = source.with_suffix(suffix)
+        if sidecar.is_file():
+            try:
+                shutil.copy2(sidecar, dest.with_suffix(suffix))
+            except OSError:
+                pass
+    return dest
+
+
+def _unique_destination(path: Path) -> Path:
+    """``path``, or a "(2)", "(3)", … suffixed sibling if it already exists."""
+    if not path.exists():
+        return path
+    counter = 2
+    while True:
+        candidate = path.with_stem(f"{path.stem} ({counter})")
+        if not candidate.exists():
+            return candidate
+        counter += 1
+
+
+def _fetch_from_url(
+    request: DownloadRequest, output_dir: Path, *, context=None
+) -> tuple[list[tuple[Path, dict]], str, list[str]]:
+    """Run yt-dlp against ``request.url``.
+
+    Returns ``(downloaded_paths, playlist_title, warnings)``.
+    """
+    import yt_dlp
+
+    downloaded_paths: list[tuple[Path, dict]] = []
+    playlist_title = ""
+    warnings: list[str] = []
 
     def progress_hook(status: dict) -> None:
         if context is not None and context.is_cancelled():
@@ -412,7 +494,7 @@ def download(
 
     entries = info.get("entries")
     if entries is not None:
-        result.playlist_title = info.get("title") or ""
+        playlist_title = info.get("title") or ""
         items = [e for e in entries if e]
     else:
         items = [info]
@@ -420,25 +502,11 @@ def download(
     for entry in items:
         path = _resolve_downloaded_path(entry, output_dir)
         if path is None:
-            result.warnings.append(f"Could not locate the file for {entry.get('title', '?')}")
+            warnings.append(f"Could not locate the file for {entry.get('title', '?')}")
             continue
         downloaded_paths.append((path, entry))
 
-    if not downloaded_paths:
-        raise DownloadError("The download produced no audio files")
-
-    total_items = len(downloaded_paths)
-    for index, (path, entry) in enumerate(downloaded_paths):
-        if context is not None:
-            context.raise_if_cancelled()
-            base = 0.7 + (index / total_items) * 0.3
-            context.progress(base, f"Processing {path.name[:50]}")
-        track = _process_download(path, entry, request, settings, context=context)
-        result.tracks.append(track)
-
-    if context is not None:
-        context.progress(1.0, f"Finished {len(result.tracks)} track(s)")
-    return result
+    return downloaded_paths, playlist_title, warnings
 
 
 def _resolve_downloaded_path(entry: dict, output_dir: Path) -> Path | None:
