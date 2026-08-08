@@ -141,9 +141,12 @@ def apply_update(zip_path: Path) -> None:
     exe_path = target_dir / Path(sys.executable).name
     helper = zip_path.parent / "apply_update.bat"
     log_path = zip_path.parent / "robocopy.log"
+    steps_log = zip_path.parent / "apply_update.log"
     helper.write_text(
         "@echo off\r\n"
         f'set "PID={os.getpid()}"\r\n'
+        f'set "STEPLOG={steps_log}"\r\n'
+        f'echo Waiting for PID %PID% to exit... > "%STEPLOG%"\r\n'
         # Matches on IMAGENAME too, not just PID -- a bare PID filter would
         # wait forever if this PID happens to be reused by an unrelated,
         # longer-lived process before this check runs.
@@ -158,13 +161,46 @@ def apply_update(zip_path: Path) -> None:
         # a locked file (made worse by antivirus scanning the freshly
         # written new build). A short grace period avoids that race.
         "timeout /t 2 /nobreak >nul\r\n"
+        f'echo Copying new build over "{target_dir}"... >> "%STEPLOG%"\r\n'
         f'robocopy "{extract_dir}" "{target_dir}" /MIR /R:10 /W:2 /LOG:"{log_path}" >nul\r\n'
+        # Robocopy's own exit codes: 0-7 all mean "success" (some
+        # combination of copied/extra/mismatched files); 8+ means at least
+        # one file could not be copied even after the retries above. A
+        # locked exe that never gets copied must not be masked by silently
+        # launching whatever is left in target_dir.
+        "set \"COPY_RESULT=%ERRORLEVEL%\"\r\n"
+        'echo Robocopy exit code: %COPY_RESULT% >> "%STEPLOG%"\r\n'
+        "if %COPY_RESULT% GEQ 8 (\r\n"
+        '  echo Copy failed -- not launching. See robocopy.log next to this file. >> "%STEPLOG%"\r\n'
+        "  goto :eof\r\n"
+        ")\r\n"
+        f'if not exist "{exe_path}" (\r\n'
+        f'  echo "{exe_path}" is missing after copy -- not launching. >> "%STEPLOG%"\r\n'
+        "  goto :eof\r\n"
+        ")\r\n"
+        f'echo Launching "{exe_path}"... >> "%STEPLOG%"\r\n'
         f'start "" "{exe_path}"\r\n'
+        'echo Launch requested. >> "%STEPLOG%"\r\n'
+        # Give Windows a moment to actually hand off before this script's
+        # own directory (which it is currently executing from) is removed.
+        "timeout /t 3 /nobreak >nul\r\n"
         f'rmdir /s /q "{zip_path.parent}"\r\n',
         encoding="utf-8",
     )
     subprocess.Popen(
         ["cmd", "/c", str(helper)],
-        creationflags=subprocess.CREATE_NO_WINDOW | subprocess.DETACHED_PROCESS,
+        # DETACHED_PROCESS (no console at all) used to be combined with
+        # CREATE_NO_WINDOW here, on the assumption that "more hidden" is
+        # strictly better. It is not: cmd's own `start` builtin -- the line
+        # that actually relaunches the app -- depends on the process having
+        # *a* console object to work from, even a hidden one. Under a fully
+        # console-less DETACHED_PROCESS parent, `start` can silently fail to
+        # create the new process while the rest of the script (a plain
+        # console tool like robocopy) runs fine -- which looked exactly like
+        # "the update installed but the app never reopened". CREATE_NO_WINDOW
+        # alone still hides the window and does not tie the helper's
+        # lifetime to this one (Windows does not kill child processes when
+        # a parent exits), so nothing is lost by dropping DETACHED_PROCESS.
+        creationflags=subprocess.CREATE_NO_WINDOW,
         close_fds=True,
     )
