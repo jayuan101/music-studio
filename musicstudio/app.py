@@ -26,6 +26,34 @@ from .core import crash_log
 from .ui import theme
 
 
+def _disable_ime_attachment() -> None:
+    """Stop Windows' Text Services Framework from attaching to this process.
+
+    Two independent crash dumps (exception 0xc0000409 / FAST_FAIL_FATAL_APP_EXIT,
+    always at the same ucrtbase.dll offset) both showed msctf.dll and imm32.dll
+    on the crashing thread's stack, and the second one crashed in the instant
+    right after a modal QMessageBox closed and focus returned -- exactly when
+    TSF re-attaches to whatever gets focus next. Ruling out QtMultimedia (the
+    second crash had none of its DLLs on the stack at all) left this as the
+    remaining common factor across both.
+
+    Chromium hit the same crash class years ago and worked around it the same
+    way: calling ImmDisableIME(0) before any window exists disables IME/TSF
+    attachment for the whole process. The only real cost is that Windows' IME
+    (Chinese/Japanese/Korean input) stops working in this app -- ordinary
+    English/Latin-script typing, which is all this app's own text fields need,
+    is unaffected.
+    """
+    if sys.platform != "win32":
+        return
+    try:
+        import ctypes
+
+        ctypes.windll.imm32.ImmDisableIME(0)
+    except OSError:
+        pass
+
+
 def create_app(argv: list[str] | None = None) -> QApplication:
     """Build the QApplication with our identity and theme applied."""
     app = QApplication.instance() or QApplication(argv if argv is not None else sys.argv)
@@ -43,6 +71,7 @@ def main(argv: list[str] | None = None) -> int:
     ensure_dirs()
     crash_log.install()
     crash_log.install_qt_message_handler()
+    _disable_ime_attachment()
     app = create_app(argv)
 
     from .ui.main_window import MainWindow
