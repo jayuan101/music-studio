@@ -128,6 +128,16 @@ jobs:
           if (-not (Test-Path dist/MusicStudio/_internal/assets/icon.ico)) {
             Write-Warning "Application icon was not bundled"
           }
+          # The auto-trim speech-detection model. Missing it does not crash
+          # the app (core/speech.py degrades to "unavailable"), but it would
+          # silently ship the "experimental" Preferences checkbox as a dead
+          # no-op, so it is worth catching here rather than in a bug report.
+          if (-not (Get-ChildItem dist/MusicStudio -Recurse -Filter "silero_vad.onnx")) {
+            Write-Warning "silero_vad.onnx was not bundled -- spoken-intro auto-trim would silently do nothing"
+          }
+          if (-not (Get-ChildItem dist/MusicStudio -Recurse -Filter "onnxruntime*")) {
+            Write-Warning "onnxruntime does not appear to be bundled -- spoken-intro auto-trim would silently do nothing"
+          }
           $size = (Get-ChildItem dist/MusicStudio -Recurse | Measure-Object -Property Length -Sum).Sum / 1MB
           Write-Host ("Bundle size: {0:N1} MB" -f $size)
 

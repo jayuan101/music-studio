@@ -730,7 +730,10 @@ class LibraryPanel(QWidget):
         paths = [c.path for c in candidates]
 
         def work(context, targets):
-            return autotrim_module.autotrim_library(targets, library=self.library, context=context)
+            trim_settings = autotrim_module.AutoTrimSettings.from_settings(get_settings())
+            return autotrim_module.autotrim_library(
+                targets, library=self.library, settings=trim_settings, context=context
+            )
 
         job = self.jobs.submit_func(
             f"Auto-trimming {len(paths)} track(s)", work, paths, category="autotrim"

@@ -14,6 +14,11 @@ send2trash>=1.8                # moves a deleted library file to the OS Recycle 
 yt-dlp>=2025.1.1               # URL / YouTube audio download
 httpx>=0.27                    # cover-art HTTP client, also used to talk to Ollama
 platformdirs>=4.0              # per-OS config/cache/data locations
+# CPU-only inference for the bundled Silero VAD model (assets/silero_vad.onnx),
+# used by core/speech.py to optionally catch spoken (non-music) intros/outros
+# during auto-trim. No network calls, no GPU. Pulls in numpy as a dependency --
+# see the MusicStudio.spec excludes list, which must NOT exclude numpy.
+onnxruntime>=1.17
 
 # Personal AI assistant. Ollama itself is NOT a dependency -- it is a
 # separate service the user installs and runs themselves, reached over HTTP.

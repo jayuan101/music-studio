@@ -151,6 +151,10 @@ class Settings:
     auto_trim_silence_threshold_db: float = -50.0
     auto_trim_max_intro_s: float = 12.0
     auto_trim_max_outro_s: float = 12.0
+    #: Also try to recognise spoken (non-music) intros/outros via local voice
+    #: detection, not just silence. Experimental: a sung intro can sometimes
+    #: be mistaken for speech. Off by default; still bounded by the caps above.
+    auto_trim_detect_speech: bool = False
 
     # -- Editing --------------------------------------------------------
     #: True-peak ceiling used by the limiter when boosting past 0 dB.
