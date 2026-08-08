@@ -69,6 +69,9 @@ def create_app(argv: list[str] | None = None) -> QApplication:
 
 def main(argv: list[str] | None = None) -> int:
     ensure_dirs()
+    # First, before anything else could abort: a windowed build has no real
+    # stderr, so every native fatal-error message has been vanishing.
+    crash_log.install_native_capture()
     crash_log.install()
     crash_log.install_qt_message_handler()
     _disable_ime_attachment()
