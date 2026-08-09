@@ -295,3 +295,64 @@ def test_unknown_bytes_do_not_crash_the_sniffer():
     art = T.Artwork.from_bytes(b"\x00\x01\x02\x03")
     assert art.mime == "image/jpeg"
     assert art.width == 0
+
+
+# ---------------------------------------------------------------------------
+# write_with_retry -- absorbing a transient "file still in use" lock
+# ---------------------------------------------------------------------------
+
+
+def test_write_with_retry_succeeds_immediately_when_not_locked(tone_flac):
+    T.write_with_retry(tone_flac, T.TagSet(title="No Lock"))
+    assert T.read(tone_flac).title == "No Lock"
+
+
+def test_write_with_retry_absorbs_a_transient_permission_error(tone_flac, monkeypatch):
+    real_write = T.write
+    calls = {"n": 0}
+
+    def flaky_write(path, tags, *, artwork=None):
+        calls["n"] += 1
+        if calls["n"] < 3:
+            try:
+                raise PermissionError(13, "Access is denied")
+            except PermissionError as exc:
+                raise T.TagError(f"Could not write tags to {path}: {exc}") from exc
+        real_write(path, tags, artwork=artwork)
+
+    monkeypatch.setattr(T, "write", flaky_write)
+
+    T.write_with_retry(tone_flac, T.TagSet(title="Recovered"), attempts=5, delay_s=0)
+
+    assert calls["n"] == 3
+    assert T.read(tone_flac).title == "Recovered"
+
+
+def test_write_with_retry_gives_up_after_exhausting_attempts(tone_flac, monkeypatch):
+    def always_locked(path, tags, *, artwork=None):
+        try:
+            raise PermissionError(13, "Access is denied")
+        except PermissionError as exc:
+            raise T.TagError(f"Could not write tags to {path}: {exc}") from exc
+
+    monkeypatch.setattr(T, "write", always_locked)
+
+    with pytest.raises(T.TagError):
+        T.write_with_retry(tone_flac, T.TagSet(title="x"), attempts=3, delay_s=0)
+
+
+def test_write_with_retry_does_not_retry_an_unrelated_error(tone_flac, monkeypatch):
+    """A real "not a recognised audio file"-style failure must surface
+    immediately -- retrying it five times would only slow the user down for
+    a problem that will never resolve itself."""
+    calls = {"n": 0}
+
+    def unrelated_failure(path, tags, *, artwork=None):
+        calls["n"] += 1
+        raise T.TagError(f"{path} is not a recognised audio file")
+
+    monkeypatch.setattr(T, "write", unrelated_failure)
+
+    with pytest.raises(T.TagError):
+        T.write_with_retry(tone_flac, T.TagSet(title="x"), attempts=5, delay_s=0)
+    assert calls["n"] == 1

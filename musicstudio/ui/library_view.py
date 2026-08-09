@@ -183,6 +183,10 @@ class LibraryPanel(QWidget):
     #: (respecting the active search/sort) -- paths, then the clicked row's
     #: index within that list.
     play_requested = Signal(list, int)
+    #: Emitted right before a write is submitted, so MainWindow can release
+    #: a player's lock on any of these paths first (Windows keeps a file
+    #: exclusively locked for as long as a QMediaPlayer has it loaded).
+    about_to_write = Signal(list)
 
     def __init__(self, library: Library, job_queue, parent=None) -> None:
         super().__init__(parent)
@@ -687,6 +691,7 @@ class LibraryPanel(QWidget):
             if not confirmed:
                 return
 
+            self.about_to_write.emit(paths)
             result = library_ops.send_to_trash(self.library, paths)
             crash_log.debug(
                 f"delete: trashed={len(result.trashed)} failed={len(result.failed)} "
@@ -728,6 +733,7 @@ class LibraryPanel(QWidget):
             self.status_label.setText("No candidate tracks for auto-trim")
             return
         paths = [c.path for c in candidates]
+        self.about_to_write.emit(paths)
 
         def work(context, targets):
             trim_settings = autotrim_module.AutoTrimSettings.from_settings(get_settings())

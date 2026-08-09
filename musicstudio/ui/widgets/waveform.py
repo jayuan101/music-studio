@@ -122,6 +122,10 @@ class WaveformView(QWidget):
         #: Regions marked for removal, drawn struck through.
         self._cuts: list[tuple[float, float]] = []
         self._message = "No file loaded"
+        #: Cached waveform pen, rebuilt only when the widget's height
+        #: changes -- see _waveform_pen().
+        self._waveform_pen_cache: QPen | None = None
+        self._waveform_pen_cache_height: int | None = None
 
         self.setMinimumHeight(140)
         self.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
@@ -286,11 +290,16 @@ class WaveformView(QWidget):
         peak = max(data.peak, 0.02)
         scale = 0.94 / peak
 
-        gradient = QLinearGradient(0, 0, 0, rect.height())
-        gradient.setColorAt(0.0, QColor(theme.WAVEFORM).lighter(120))
-        gradient.setColorAt(0.5, QColor(theme.WAVEFORM))
-        gradient.setColorAt(1.0, QColor(theme.WAVEFORM).darker(130))
-        painter.setPen(QPen(QBrush(gradient), 1))
+        waveform_pen = self._waveform_pen(rect.height())
+        # Reused for every selected pixel column too -- constructing a fresh
+        # QPen per column (potentially hundreds of times per single repaint,
+        # and many repaints per second while dragging a selection) was
+        # implicated in a rare access-violation crash: heavy allocation
+        # churn during paintEvent colliding with a GC pass inside
+        # PySide6/shiboken. Building both pens once removes the churn
+        # rather than trying to out-guess the exact race.
+        selection_pen = QPen(QColor(theme.WAVEFORM_SEL), 1)
+        painter.setPen(waveform_pen)
 
         selection = self._selection
         for x in range(width):
@@ -303,10 +312,21 @@ class WaveformView(QWidget):
             y_bottom = mid_y - low * half
 
             if selection is not None and selection[0] <= self._time_at(x) <= selection[1]:
-                painter.setPen(QPen(QColor(theme.WAVEFORM_SEL), 1))
+                painter.setPen(selection_pen)
             else:
-                painter.setPen(QPen(QBrush(gradient), 1))
+                painter.setPen(waveform_pen)
             painter.drawLine(QPointF(x, y_top), QPointF(x, max(y_bottom, y_top + 1)))
+
+    def _waveform_pen(self, height: int) -> QPen:
+        """The gradient waveform pen, rebuilt only when ``height`` changes."""
+        if self._waveform_pen_cache is None or self._waveform_pen_cache_height != height:
+            gradient = QLinearGradient(0, 0, 0, height)
+            gradient.setColorAt(0.0, QColor(theme.WAVEFORM).lighter(120))
+            gradient.setColorAt(0.5, QColor(theme.WAVEFORM))
+            gradient.setColorAt(1.0, QColor(theme.WAVEFORM).darker(130))
+            self._waveform_pen_cache = QPen(QBrush(gradient), 1)
+            self._waveform_pen_cache_height = height
+        return self._waveform_pen_cache
 
     def _paint_selection(self, painter: QPainter, rect) -> None:
         if self._selection is None:
