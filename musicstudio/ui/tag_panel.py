@@ -85,6 +85,10 @@ class TagPanel(QWidget):
     """Edit metadata for one file, or apply shared fields across many."""
 
     tags_saved = Signal(list)
+    #: Emitted right before a write is submitted, so MainWindow can release
+    #: a player's lock on any of these paths first (Windows keeps a file
+    #: exclusively locked for as long as a QMediaPlayer has it loaded).
+    about_to_write = Signal(list)
 
     def __init__(self, job_queue, parent=None) -> None:
         super().__init__(parent)
@@ -398,13 +402,14 @@ class TagPanel(QWidget):
                     payload = existing
                 else:
                     payload = edited
-                tags_module.write(target, payload, artwork=artwork)
+                tags_module.write_with_retry(target, payload, artwork=artwork)
                 written.append(Path(target))
             context.progress(1.0, f"Tagged {len(written)} file(s)")
             return written
 
         self.save_button.setEnabled(False)
         self.save_all_button.setEnabled(False)
+        self.about_to_write.emit(paths)
         job = self.jobs.submit_func(f"Saving tags ({len(paths)})", work, paths, category="tags")
         job.signals.finished.connect(self._on_saved)
 

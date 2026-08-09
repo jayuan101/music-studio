@@ -210,6 +210,29 @@ class MainWindow(QMainWindow):
         # A preference change should take effect immediately, not next launch.
         self.settings_panel.settings_changed.connect(self._on_settings_changed)
 
+        # A write to a path currently loaded in either player must release
+        # that player's lock on it first -- Windows keeps a file exclusively
+        # locked for as long as a QMediaPlayer has it loaded, paused or not.
+        self.tag_panel.about_to_write.connect(self._release_file_locks)
+        self.editor_panel.about_to_write.connect(self._release_file_locks)
+        self.library_panel.about_to_write.connect(self._release_file_locks)
+
+    def _release_file_locks(self, paths: list[Path]) -> None:
+        """Stop playback of any of ``paths`` before something writes to it.
+
+        Confirmed via a native crash log: repeated "Access is denied" saves
+        traced back to the target file still being loaded in a player --
+        Windows keeps a file exclusively locked for as long as a
+        QMediaPlayer has it as its source, paused or not. Runs on the main
+        thread, synchronously, before the write job is even submitted.
+        """
+        targets = {Path(p).resolve() for p in paths}
+        current = self.now_playing_bar.queue.current
+        if current is not None and Path(current).resolve() in targets:
+            self.now_playing_bar.player.clear()
+        if self.editor_panel.current_path is not None and Path(self.editor_panel.current_path).resolve() in targets:
+            self.editor_panel.player.clear()
+
     # -- navigation -----------------------------------------------------
     def _on_page_changed(self, index: int) -> None:
         self.stack.setCurrentIndex(index)
@@ -390,6 +413,7 @@ class MainWindow(QMainWindow):
         if not paths:
             self.status_message.setText("Nothing selected to auto-trim")
             return
+        self._release_file_locks(paths)
         trim_settings = autotrim_module.AutoTrimSettings.from_settings(get_settings())
 
         def work(context, targets):

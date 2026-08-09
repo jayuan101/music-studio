@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import base64
 import struct
+import time
 from dataclasses import asdict, dataclass, field, fields
 from pathlib import Path
 
@@ -805,6 +806,63 @@ def write(path: str | Path, tags: TagSet, *, artwork: Artwork | None = None) -> 
         raise
     except Exception as exc:
         raise TagError(f"Could not write tags to {path.name}: {exc}") from exc
+
+
+#: A file just released by this app's own player can still be briefly
+#: locked by Windows -- the OS-level release is not always synchronous with
+#: the Qt call that requested it. Same shape as
+#: library_ops.send_to_trash's proven retry for the identical problem.
+_WRITE_RETRIES = 5
+_WRITE_RETRY_DELAY_S = 0.5
+
+
+def _caused_by_permission_error(exc: BaseException) -> bool:
+    """Whether a PermissionError appears anywhere in ``exc``'s cause chain.
+
+    write() always wraps the real failure in a TagError (itself often
+    wrapping mutagen's own MutagenError first), so the original
+    PermissionError -- the one worth retrying -- is a couple of links down
+    ``__cause__``, not the exception actually raised.
+    """
+    current: BaseException | None = exc
+    for _ in range(5):
+        if isinstance(current, PermissionError):
+            return True
+        if current is None:
+            return False
+        current = current.__cause__
+    return False
+
+
+def write_with_retry(
+    path: str | Path,
+    tags: TagSet,
+    *,
+    artwork: Artwork | None = None,
+    attempts: int = _WRITE_RETRIES,
+    delay_s: float = _WRITE_RETRY_DELAY_S,
+) -> None:
+    """Like :func:`write`, but absorbs a transient "file still in use"
+    failure instead of surfacing it immediately.
+
+    Retrying costs nothing when the file was never locked, and turns a real
+    transient lock (most commonly: this app's own player only just told to
+    let go of the file) into a successful save instead of a failure the
+    user has to notice and retry by hand.
+    """
+    last_exc: TagError | None = None
+    for attempt in range(attempts):
+        try:
+            write(path, tags, artwork=artwork)
+            return
+        except TagError as exc:
+            if not _caused_by_permission_error(exc):
+                raise
+            last_exc = exc
+            if attempt < attempts - 1:
+                time.sleep(delay_s)
+    assert last_exc is not None
+    raise last_exc
 
 
 def _field_text(tags: TagSet, field_name: str) -> str:

@@ -42,6 +42,10 @@ class EditorPanel(QWidget):
     """Waveform editor with a non-destructive effect stack."""
 
     exported = Signal(list)
+    #: Emitted right before a write is submitted, so MainWindow can release
+    #: a player's lock on any of these paths first (Windows keeps a file
+    #: exclusively locked for as long as a QMediaPlayer has it loaded).
+    about_to_write = Signal(list)
 
     def __init__(self, job_queue, parent=None) -> None:
         super().__init__(parent)
@@ -791,6 +795,7 @@ class EditorPanel(QWidget):
         spec = self.build_spec()
         self.save_button.setEnabled(False)
         self.export_button.setEnabled(False)
+        self.about_to_write.emit([source])
 
         def work(context, source, spec, profile):
             from ..core import tags as tags_module
