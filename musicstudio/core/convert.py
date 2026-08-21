@@ -645,9 +645,17 @@ def render_preview(
     from ..config import TEMP_DIR
 
     TEMP_DIR.mkdir(parents=True, exist_ok=True)
-    # A stable name per source keeps the cache directory from filling up with
-    # one file per slider movement.
-    destination = TEMP_DIR / f"preview_{abs(hash(str(source))) % 10**8}.wav"
+    # A unique name per render: the preview is usually still loaded in the
+    # player (holding the file open) when the next render starts, and Media
+    # Foundation's lock makes ffmpeg fail to overwrite it -- it surfaces as
+    # exit code -13 (EACCES), not as an obvious "file in use" message.
+    destination = unique_destination(
+        TEMP_DIR / f"preview_{abs(hash(str(source))) % 10**8}.wav"
+    )
+    # Unique names would fill the cache with one wav per slider movement, so
+    # stale previews are reaped on every render. The one currently playing
+    # cannot be deleted -- that failure is fine, the next pass gets it.
+    _cleanup_stale_previews(TEMP_DIR, keep=destination)
 
     info = probe.probe(source)
     output = resolve_output(info, formats.WAV, preserve_rate=True, preserve_depth=True)
@@ -677,6 +685,21 @@ def render_preview(
         should_cancel=context.is_cancelled if context is not None else None,
     )
     return destination
+
+
+def _cleanup_stale_previews(directory: Path, *, keep: Path) -> None:
+    """Delete old ``preview_*.wav`` renders from the cache directory.
+
+    Best-effort by design: the preview currently loaded in the player is
+    locked and simply survives to be reaped by a later cleanup.
+    """
+    for candidate in directory.glob("preview_*.wav"):
+        if candidate == keep:
+            continue
+        try:
+            candidate.unlink()
+        except OSError:
+            pass
 
 
 def suggest_destination(

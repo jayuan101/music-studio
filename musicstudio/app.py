@@ -18,7 +18,6 @@ import sys
 # QMediaPlayer is constructed, so as early as possible.
 os.environ.setdefault("QT_MEDIA_BACKEND", "windows")
 
-from PySide6.QtCore import Qt, QTimer
 from PySide6.QtWidgets import QApplication
 
 from . import APP_NAME, APP_ORG, __version__
@@ -56,31 +55,27 @@ def _disable_ime_attachment() -> None:
 
 
 def _tame_garbage_collector(app: QApplication) -> None:
-    """Stop Python's cyclic GC from running at an arbitrary, unsafe moment.
+    """Stop Python's cyclic GC from running at all.
 
     Every access-violation crash the native capture has recorded (waveform
     peak computation, a Library search, a JobQueue signal connection --
     three unrelated code paths) shows the same last captured state:
-    "Garbage-collecting". Python's automatic collector can run at
-    essentially any bytecode boundary, on any thread, including in the
-    middle of constructing or tearing down a PySide6-wrapped Qt object --
-    a known hazard class for PySide6/PyQt apps, since shiboken's C++/Python
+    "Garbage-collecting". Python's collector can run at essentially any
+    bytecode boundary, on any thread, including in the middle of
+    constructing or tearing down a PySide6-wrapped Qt object -- a known
+    hazard class for PySide6/PyQt apps, since shiboken's C++/Python
     reference bookkeeping is not safe to interrupt like that.
 
-    Disabling automatic collection and running it manually instead, on a
-    timer tied to the main thread's own event loop, moves every collection
-    to a moment Qt itself considers safe (between processed events) rather
-    than an arbitrary one on an arbitrary thread. Reference cycles this app
-    does create -- JobQueue's own signal-connection lambdas are exactly
-    this shape -- still get reclaimed, just on a predictable schedule
-    instead of at random.
+    An earlier mitigation ran gc.collect() from a QTimer on the main
+    thread instead; the native log shows even *that* collection crashing
+    the same way (v1.4.8), so no collection moment is actually safe once
+    Qt objects with reference cycles exist. The collector is therefore
+    left off entirely. Reference cycles this app creates (JobQueue's
+    signal-connection lambdas are exactly this shape) then leak for the
+    life of the process instead of being reclaimed -- a bounded,
+    harmless cost for a desktop app compared to crashing at random.
     """
     gc.disable()
-    timer = QTimer(app)
-    timer.setInterval(5 * 60 * 1000)  # frequent enough to bound memory
-    timer.timeout.connect(gc.collect)  # growth, rare enough to cost nothing
-    timer.start()
-    app._gc_timer = timer  # keep a Python-side reference alongside Qt's own
 
 
 def create_app(argv: list[str] | None = None) -> QApplication:
