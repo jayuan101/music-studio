@@ -272,6 +272,42 @@ def test_search_returns_empty_list_for_a_blank_query(monkeypatch):
     assert download.search("   ") == []
 
 
+def test_search_resolves_a_pasted_link_instead_of_text_searching(monkeypatch):
+    """A youtu.be share link pasted into search must become one result, not
+    a text query that matches nothing (the 'no song' bug)."""
+    monkeypatch.setattr(
+        download,
+        "_search_source",
+        lambda *a, **k: (_ for _ in ()).throw(AssertionError("should not be called")),
+    )
+    monkeypatch.setattr(
+        download,
+        "inspect_url",
+        lambda url: UrlInfo(title="Monica-So Gone", uploader="Ayanna S.", duration=247),
+    )
+
+    results = download.search("https://youtu.be/k_BzIsVNDPo?si=GIlkq2w5hUuYaG-3")
+
+    assert len(results) == 1
+    result = results[0]
+    assert result.title == "Monica-So Gone"
+    assert result.url == "https://youtu.be/k_BzIsVNDPo?si=GIlkq2w5hUuYaG-3"
+    assert result.duration_label == "4:07"
+
+
+def test_link_result_marks_a_playlist(monkeypatch):
+    monkeypatch.setattr(
+        download,
+        "inspect_url",
+        lambda url: UrlInfo(title="Mix", is_playlist=True, entry_count=12),
+    )
+
+    result = download._result_from_url("https://youtube.com/playlist?list=x")
+
+    assert "playlist" in result.title
+    assert "12" in result.title
+
+
 # ---------------------------------------------------------------------------
 # _best_thumbnail
 #

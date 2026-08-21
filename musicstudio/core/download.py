@@ -198,6 +198,13 @@ def search(
     if not query:
         return []
 
+    if is_supported_url(query):
+        # A pasted link (e.g. a YouTube "Share" URL like youtu.be/...) is not
+        # a search query -- fed to a site's text search it matches nothing,
+        # which reads as "no song". Resolve it into one result instead, so
+        # preview and download work from the search box too.
+        return [_result_from_url(query)]
+
     chosen = list(sources) if sources is not None else list(SEARCH_SOURCES)
     results: list[SearchResult] = []
     errors: list[str] = []
@@ -213,6 +220,27 @@ def search(
     if not results and errors:
         raise DownloadError("; ".join(errors))
     return results
+
+
+def _result_from_url(url: str) -> SearchResult:
+    """Turn a pasted link into a single search result.
+
+    The entry keeps the original URL (short links included) as its target,
+    so previewing or downloading it goes through the same yt-dlp path the
+    Source box uses -- which already knows how to resolve share links.
+    """
+    info = inspect_url(url)
+    title = info.title
+    if info.is_playlist:
+        title = f"{info.title} (playlist, {info.entry_count} tracks)"
+    return SearchResult(
+        title=title,
+        uploader=info.uploader,
+        duration=info.duration,
+        url=url,
+        thumbnail=info.thumbnail,
+        source="Link",
+    )
 
 
 def _search_source(source: str, prefix: str, query: str, limit: int) -> list[SearchResult]:
