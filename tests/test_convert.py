@@ -395,3 +395,42 @@ def test_stacked_edits_into_a_lossy_format(tone_flac, tmp_path):
     assert info.channels == 1
     assert info.sample_rate == 44100
     assert info.duration == pytest.approx(2.0, abs=0.12)
+
+
+# ---------------------------------------------------------------------------
+# render_preview -- temp file naming
+#
+# A real bug: the preview used a stable name per source, but the player still
+# holds that file open while the next render starts (Media Foundation locks
+# it), and ffmpeg fails the overwrite with exit code -13 (EACCES) -- reported
+# as the opaque "ffmpeg exited with code 4294967283".
+# ---------------------------------------------------------------------------
+
+
+def test_render_preview_does_not_reuse_the_playing_files_path(tone_flac, tmp_path, monkeypatch):
+    from musicstudio import config
+
+    monkeypatch.setattr(config, "TEMP_DIR", tmp_path)
+
+    first = convert.render_preview(tone_flac, EditSpec(), seconds=1.0)
+    # The first render is still loaded in the player (i.e. it exists on disk)
+    # when the second render runs -- it must not be the overwrite target.
+    second = convert.render_preview(tone_flac, EditSpec(), seconds=1.0)
+
+    assert first != second
+    assert second.exists()
+
+
+def test_stale_preview_reaping_leaves_a_locked_file_alone(tmp_path):
+    stale = tmp_path / "preview_old.wav"
+    stale.write_bytes(b"old")
+    keep = tmp_path / "preview_new.wav"
+
+    convert._cleanup_stale_previews(tmp_path, keep=keep)
+
+    assert not stale.exists()
+
+    # A file that cannot be deleted (locked by the player) is skipped, not fatal.
+    keep.write_bytes(b"new")
+    convert._cleanup_stale_previews(tmp_path, keep=keep)
+    assert keep.exists()
