@@ -2,9 +2,21 @@
 
 from __future__ import annotations
 
+from collections import OrderedDict
 from pathlib import Path
 
-from PySide6.QtCore import QAbstractTableModel, QFileSystemWatcher, QModelIndex, QTimer, Qt, Signal
+from PySide6.QtCore import (
+    QAbstractTableModel,
+    QFileSystemWatcher,
+    QModelIndex,
+    QObject,
+    QRunnable,
+    QThreadPool,
+    QTimer,
+    Qt,
+    Signal,
+    Slot,
+)
 from PySide6.QtGui import QColor, QPixmap
 from PySide6.QtWidgets import (
     QAbstractItemView,
@@ -39,6 +51,16 @@ LIBRARY_ART_PREVIEW_SIZE = 140
 #: Wide enough for the artwork box plus a column of tag fields beside it.
 DETAILS_PANEL_WIDTH = 260
 
+#: How many previously-read previews to keep. Each entry holds that track's
+#: embedded cover art, so this is a memory/responsiveness trade: ~64 covers of
+#: a few hundred KB each is a handful of MB, and makes revisiting a track in
+#: the table instant instead of a fresh disk read.
+PREVIEW_CACHE_SIZE = 64
+#: Wait this long after the selection settles before reading from disk. Holding
+#: an arrow key down walks through rows far faster than this, so only the row
+#: the user actually stops on costs a read.
+PREVIEW_READ_DELAY_MS = 90
+
 #: (label, TagSet attribute) shown in the details panel, in order.
 _DETAIL_FIELDS = [
     ("Title", "title"),
@@ -48,6 +70,56 @@ _DETAIL_FIELDS = [
     ("Year", "date"),
     ("Genre", "genre"),
 ]
+
+
+class _PreviewSignals(QObject):
+    """Signal carrier for :class:`_PreviewReadTask`.
+
+    A separate QObject because QRunnable is not one -- the same split the
+    job queue makes for the same reason.
+    """
+
+    #: (token, (path, artwork bytes or None, field dict or None))
+    ready = Signal(int, object)
+
+
+class _PreviewReadTask(QRunnable):
+    """Read one track's tags and cover art off the GUI thread.
+
+    Reading a track's tags reads its embedded cover art with them, and on
+    this library's files that measured ~84 ms typically and 908 ms on a
+    cold read from a spinning disk. Doing that inline in the selection
+    handler stalled the whole window on every arrow-key press through the
+    table -- the single biggest source of the app feeling frozen.
+
+    Only plain data crosses back to the main thread: bytes and strings.
+    The QPixmap is built there, because Qt GUI objects must not be
+    constructed on a worker thread.
+    """
+
+    def __init__(self, token: int, path: Path, signals: _PreviewSignals) -> None:
+        super().__init__()
+        self._token = token
+        self._path = path
+        self._signals = signals
+
+    @Slot()
+    def run(self) -> None:
+        try:
+            tags = tags_module.try_read(self._path)
+            art = tags.artwork.data if tags.has_artwork() else None
+            fields = {attr: (getattr(tags, attr, "") or "") for _, attr in _DETAIL_FIELDS}
+            payload = (self._path, art, fields)
+        except BaseException:  # noqa: BLE001 -- must never escape a QRunnable override
+            # An unreadable file is a blank preview, not a crashed app.
+            payload = (self._path, None, None)
+        try:
+            self._signals.ready.emit(self._token, payload)
+        except RuntimeError:
+            # The panel went away while this read was in flight. Nobody is
+            # listening on a deleted signal source, so this is a no-op rather
+            # than a lost result -- the same guard the job queue makes.
+            pass
 
 
 class _LibraryArtworkPreview(ArtworkView):
@@ -192,6 +264,24 @@ class LibraryPanel(QWidget):
         super().__init__(parent)
         self.library = library
         self.jobs = job_queue
+
+        # Artwork/tag previews are read on a worker thread -- see
+        # _PreviewReadTask. Set up before _build(), because the refresh at the
+        # end of this constructor can already select a row and ask for one.
+        self._preview_signals = _PreviewSignals(self)
+        self._preview_signals.ready.connect(self._on_preview_ready)
+        self._preview_pool = QThreadPool(self)
+        # One thread: scrolling should queue at most one read behind the
+        # current one, not start a stampede of them against the same disk.
+        self._preview_pool.setMaxThreadCount(1)
+        self._preview_token = 0
+        self._preview_cache: OrderedDict[tuple, tuple] = OrderedDict()
+        self._pending_preview_path: Path | None = None
+        self._preview_timer = QTimer(self)
+        self._preview_timer.setSingleShot(True)
+        self._preview_timer.setInterval(PREVIEW_READ_DELAY_MS)
+        self._preview_timer.timeout.connect(self._start_preview_read)
+
         self._build()
         self.setAcceptDrops(True)
 
@@ -443,6 +533,13 @@ class LibraryPanel(QWidget):
         return panel
 
     def _refresh_artwork_preview(self, paths: list[Path]) -> None:
+        # Whatever read is in flight is now for a row the user has moved off.
+        # Bumping the token lets its result arrive and be discarded, which is
+        # cheaper and safer than trying to interrupt a running read.
+        self._preview_timer.stop()
+        self._preview_token += 1
+        self._pending_preview_path = None
+
         if not paths:
             self.preview_art.clear_art()
             self.preview_label.setText("Select a track to see its artwork and tags")
@@ -458,18 +555,84 @@ class LibraryPanel(QWidget):
             self.detail_edit_button.setVisible(True)
             return
 
-        tags = tags_module.try_read(paths[0])
-        if tags.has_artwork():
-            self.preview_art.set_art(tags.artwork.data)
+        cached = self._cached_preview(paths[0])
+        if cached is not None:
+            self._apply_preview(*cached)
+            return
+
+        # Not cached, so this costs a disk read. Show the panel in its
+        # waiting state now rather than leaving the previous track's art up,
+        # which would be showing the wrong thing rather than nothing.
+        self.preview_art.clear_art()
+        self.preview_label.setVisible(False)
+        for value_label in self.detail_fields.values():
+            value_label.setText("…")
+        self.detail_fields_widget.setVisible(True)
+        self.detail_edit_button.setVisible(True)
+
+        self._pending_preview_path = paths[0]
+        self._preview_timer.start()
+
+    def _start_preview_read(self) -> None:
+        path = self._pending_preview_path
+        if path is None:
+            return
+        self._preview_pool.start(
+            _PreviewReadTask(self._preview_token, path, self._preview_signals)
+        )
+
+    @Slot(int, object)
+    def _on_preview_ready(self, token: int, payload) -> None:
+        if token != self._preview_token:
+            return  # the selection moved on while this read was in flight
+        path, art, fields = payload
+        if fields is not None:
+            self._store_preview(path, art, fields)
+        self._apply_preview(art, fields)
+
+    def _apply_preview(self, art: bytes | None, fields: dict[str, str] | None) -> None:
+        if art:
+            self.preview_art.set_art(art)
         else:
             self.preview_art.clear_art()
-
         self.preview_label.setVisible(False)
         for attr, value_label in self.detail_fields.items():
-            value = getattr(tags, attr, "") or "—"
+            value = (fields or {}).get(attr, "") or "—"
             value_label.setText(str(value))
         self.detail_fields_widget.setVisible(True)
         self.detail_edit_button.setVisible(True)
+
+    # -- preview cache --------------------------------------------------
+    def _preview_key(self, path: Path) -> tuple | None:
+        """Identify a file by path *and* content stamp.
+
+        Keying on mtime and size as well as the path means editing a track's
+        tags elsewhere in the app invalidates its cached preview for free,
+        with no cross-panel invalidation to remember to wire up.
+        """
+        try:
+            info = path.stat()
+        except OSError:
+            return None
+        return (str(path), info.st_mtime_ns, info.st_size)
+
+    def _cached_preview(self, path: Path) -> tuple | None:
+        key = self._preview_key(path)
+        if key is None:
+            return None
+        entry = self._preview_cache.get(key)
+        if entry is not None:
+            self._preview_cache.move_to_end(key)
+        return entry
+
+    def _store_preview(self, path: Path, art: bytes | None, fields: dict[str, str]) -> None:
+        key = self._preview_key(path)
+        if key is None:
+            return
+        self._preview_cache[key] = (art, fields)
+        self._preview_cache.move_to_end(key)
+        while len(self._preview_cache) > PREVIEW_CACHE_SIZE:
+            self._preview_cache.popitem(last=False)
 
     # -- events ---------------------------------------------------------
     def _on_selection_changed(self, *_) -> None:
