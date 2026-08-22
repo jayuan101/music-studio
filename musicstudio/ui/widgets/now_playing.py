@@ -19,8 +19,8 @@ from PySide6.QtGui import QPixmap
 from PySide6.QtWidgets import QHBoxLayout, QLabel, QPushButton, QStyle, QVBoxLayout, QWidget
 
 from .. import theme
-from ...core import tags as tags_module
 from ..common import safe_pixmap
+from .async_read import AsyncTagReader
 from .player import Player
 
 THUMBNAIL_SIZE = 42
@@ -162,6 +162,11 @@ class NowPlayingBar(QWidget):
         super().__init__(parent)
         self.queue = PlaybackQueue(self)
         self.player = Player()
+        # Track info is read off the GUI thread; see AsyncTagReader. No debounce
+        # here -- unlike arrow-keying through a table, a track change is a
+        # deliberate act and its details should appear as soon as they can.
+        self._tag_reader = AsyncTagReader(self, delay_ms=0)
+        self._tag_reader.ready.connect(self._on_track_info_ready)
         self._build()
 
         self.queue.current_changed.connect(self._on_current_changed)
@@ -254,7 +259,25 @@ class NowPlayingBar(QWidget):
         self.player.load(track)
         self.player.play()
 
-        info = tags_module.try_read(track)
+        # Playback starts immediately; the title, artist and cover art follow
+        # when the read lands. Reading them inline here used to stall the whole
+        # window on every track change -- including the automatic advance at the
+        # end of a song, so simply listening through an album stuttered the UI.
+        result = self._tag_reader.request(track)
+        if result is not False:
+            self._apply_track_info(track, result)
+        else:
+            self.title_label.setText(track.stem)
+            self.artist_label.setText("")
+            self._clear_art()
+        self._update_controls()
+
+    def _apply_track_info(self, path: Path, info) -> None:
+        if info is None:
+            self.title_label.setText(path.stem)
+            self.artist_label.setText("")
+            self._clear_art()
+            return
         self.title_label.setText(info.display_title)
         self.artist_label.setText(info.display_artist)
         if info.has_artwork():
@@ -269,7 +292,11 @@ class NowPlayingBar(QWidget):
                 self._clear_art()
         else:
             self._clear_art()
-        self._update_controls()
+
+    def _on_track_info_ready(self, path: Path, info) -> None:
+        # Ignore a read that landed after the user skipped on again.
+        if self.queue.current and Path(self.queue.current) == Path(path):
+            self._apply_track_info(Path(path), info)
 
     def _on_finished(self) -> None:
         if self.queue.repeat == RepeatMode.ONE:

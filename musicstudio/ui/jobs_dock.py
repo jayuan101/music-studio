@@ -185,7 +185,21 @@ class JobsDock(QDockWidget):
             widget.deleteLater()
         self._update_summary()
 
+    def _drop_orphaned_rows(self) -> None:
+        """Remove rows whose job the queue has already aged out.
+
+        The queue trims its own finished-job history, so without this the rows
+        -- and the JobRow widgets holding them -- would be the thing that grew
+        without bound instead.
+        """
+        for job_id in [i for i in self._rows if self.queue.job(i) is None]:
+            widget = self._rows.pop(job_id)
+            self.list_layout.removeWidget(widget)
+            widget.setParent(None)
+            widget.deleteLater()
+
     def _update_summary(self) -> None:
+        self._drop_orphaned_rows()
         active = self.queue.active_count()
         total = len(self._rows)
         if active:

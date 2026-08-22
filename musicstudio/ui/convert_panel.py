@@ -24,6 +24,7 @@ from ..config import get_settings
 from ..core import convert as convert_module
 from ..core import formats, probe
 from .common import NoteList, QualityBadge, card, heading, row, section_label, spacer
+from .widgets.async_read import AsyncProbeReader
 
 #: Sample rates worth offering. "Source" is first because preserving is default.
 SAMPLE_RATES = [("Keep source", 0), ("192 kHz", 192000), ("96 kHz", 96000),
@@ -46,6 +47,9 @@ class ConvertPanel(QWidget):
         self._results: list[Path] = []
         #: Remembered across format switches -- VBR is the better default.
         self._vbr_preference = True
+        # ffprobe runs off the GUI thread; see AsyncProbeReader.
+        self._probe_reader = AsyncProbeReader(self)
+        self._probe_reader.ready.connect(self._on_probe_ready)
         self._build()
 
     def _build(self) -> None:
@@ -248,7 +252,27 @@ class ConvertPanel(QWidget):
             self.notes.setVisible(False)
             return
 
-        info = probe.try_probe(self._paths[current])
+        # Probing spawns ffprobe, and this runs on every row change *and* every
+        # format or VBR toggle -- inline it froze the page on each one. Results
+        # are cached, so changing settings for an already-probed file is free.
+        path = self._paths[current]
+        probed = self._probe_reader.request(path)
+        if probed is False:
+            self.preview_label.setText("Reading…")
+            return
+        self._render_preview(path, probed)
+
+    def _on_probe_ready(self, path: Path, info) -> None:
+        current = self.file_list.currentRow()
+        if not self._paths or current < 0 or current >= len(self._paths):
+            return
+        # Ignore a probe that landed after the user moved to another file.
+        if Path(self._paths[current]) != Path(path):
+            return
+        self._render_preview(Path(path), info)
+
+    def _render_preview(self, path: Path, info) -> None:
+        profile = self._profile()
         if info is None:
             self.preview_label.setText("That file could not be read.")
             return

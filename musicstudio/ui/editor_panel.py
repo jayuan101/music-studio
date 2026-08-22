@@ -34,6 +34,7 @@ from ..core import formats, probe
 from ..core.edit import ChannelMode, EditSpec, EqBand, GainMode, Region, SilenceMode
 from . import theme
 from .common import QualityBadge, card, format_duration, heading, row, section_label, spacer
+from .widgets.async_read import AsyncProbeReader
 from .widgets.player import Player, PreviewController
 from .widgets.waveform import WaveformView, compute_peaks
 
@@ -54,6 +55,9 @@ class EditorPanel(QWidget):
         self._path: Path | None = None
         self._info: probe.AudioInfo | None = None
         self._cuts: list[Region] = []
+        # ffprobe runs off the GUI thread; see AsyncProbeReader.
+        self._probe_reader = AsyncProbeReader(self)
+        self._probe_reader.ready.connect(self._on_probe_ready)
         self._build()
 
     # -- construction ---------------------------------------------------
@@ -396,18 +400,18 @@ class EditorPanel(QWidget):
     def load(self, path: Path) -> None:
         """Load a file and render its waveform in the background."""
         self._path = Path(path)
-        self._info = probe.try_probe(self._path)
         self.reset_edits()
-
         self.file_label.setText(self._path.name)
-        if self._info is not None:
-            self.source_badge.set_lossless(self._info.is_lossless, self._info.describe_technical())
-            index = self.export_format.findData(
-                (formats.profile_for_extension(self._path.suffix) or formats.FLAC).id
-            )
-            self.export_format.setCurrentIndex(max(0, index))
-        self.export_button.setEnabled(self._info is not None)
-        self.save_button.setEnabled(self._info is not None)
+
+        # Probing spawns ffprobe. Inline here -- and this runs on every Library
+        # row click, via MainWindow._preload_editor -- a slow or stalled process
+        # froze the whole window for as long as its timeout allowed.
+        self._info = None
+        self.export_button.setEnabled(False)
+        self.save_button.setEnabled(False)
+        probed = self._probe_reader.request(self._path)
+        if probed is not False:
+            self._apply_probe(self._path, probed)
 
         # Any in-flight preview belongs to the previous file.
         self.preview.cancel()
@@ -425,6 +429,24 @@ class EditorPanel(QWidget):
             f"Waveform for {self._path.name}", work, self._path, category="waveform"
         )
         job.signals.finished.connect(self._on_waveform_ready)
+
+    def _on_probe_ready(self, path: Path, info) -> None:
+        # Ignore a probe that landed after the user selected a different file.
+        if self._path is None or Path(path) != Path(self._path):
+            return
+        self._apply_probe(Path(path), info)
+
+    def _apply_probe(self, path: Path, info) -> None:
+        self._info = info
+        if info is not None:
+            self.source_badge.set_lossless(info.is_lossless, info.describe_technical())
+            index = self.export_format.findData(
+                (formats.profile_for_extension(path.suffix) or formats.FLAC).id
+            )
+            self.export_format.setCurrentIndex(max(0, index))
+        self.export_button.setEnabled(info is not None)
+        self.save_button.setEnabled(info is not None)
+        self._update_summary()
 
     def _on_waveform_ready(self, _job_id: str, state: str, payload) -> None:
         if state != "succeeded":

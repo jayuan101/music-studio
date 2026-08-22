@@ -26,6 +26,32 @@ from ..core import secrets
 from . import theme
 from .common import card, heading, row, section_label, spacer
 
+#: How long a pending "may I do this?" waits for an answer before giving up.
+#: Long enough that a user who wandered off mid-thought still comes back to a
+#: live prompt; short enough that an abandoned one cannot hold a worker thread
+#: for the rest of the session.
+CONFIRMATION_TIMEOUT_S = 10 * 60
+
+
+def _safe(signal):
+    """Wrap ``signal.emit`` so a deleted receiver cannot take the app down.
+
+    These emits happen on a worker thread, once per streamed token, against a
+    widget the GUI thread may be tearing down -- closing the window mid-reply
+    is enough. ``JobSignals`` was hardened against exactly this in the job
+    system (see ``Job._safe_emit``); this is the one signal path that never
+    got the same treatment. Nobody is listening on a deleted signal source, so
+    swallowing the RuntimeError is a no-op rather than a lost message.
+    """
+
+    def emit(*args) -> None:
+        try:
+            signal.emit(*args)
+        except RuntimeError:
+            pass
+
+    return emit
+
 
 class ConfirmationGate(QObject):
     """Bridges a worker-thread confirmation request onto the Qt main thread.
@@ -49,7 +75,13 @@ class ConfirmationGate(QObject):
     def ask(self, preview: assistant_module.ActionPreview) -> bool:
         self._event.clear()
         self.requested.emit(preview)
-        self._event.wait()
+        if not self._event.wait(timeout=CONFIRMATION_TIMEOUT_S):
+            # Nobody answered. An unbounded wait here parks a worker thread for
+            # the life of the process -- and the pool this runs on is shared by
+            # every background operation in the app, so enough abandoned
+            # confirmations would starve it and leave the app looking frozen.
+            # An unanswered request is a declined one.
+            return False
         return self._decision
 
     def resolve(self, decision: bool) -> None:
@@ -199,8 +231,8 @@ class AssistantPanel(QWidget):
         def work(context, message):
             reply = active_assistant.send(
                 message, context,
-                on_text=self._text_delta.emit,
-                on_narration=self._narration_text.emit,
+                on_text=_safe(self._text_delta),
+                on_narration=_safe(self._narration_text),
             )
             return reply, list(active_assistant.last_changed_paths)
 

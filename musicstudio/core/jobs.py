@@ -165,6 +165,12 @@ class Job(QRunnable):
         self._safe_emit(self.signals.finished, self.id, JobState.SUCCEEDED.value, self.result)
 
 
+#: How many finished jobs to keep. Enough to still read back what just
+#: happened in the queue dock, few enough that a long session cannot
+#: accumulate hundreds of retained results.
+MAX_FINISHED_JOBS = 50
+
+
 class JobQueue(QObject):
     """Owns the thread pool and the list of jobs shown in the queue dock."""
 
@@ -213,7 +219,27 @@ class JobQueue(QObject):
     @Slot(str, str, object)
     def _relay_finished(self, job_id: str, state: str, payload: object) -> None:
         self.job_finished.emit(job_id, state, payload)
+        self._trim_history()
         self.queue_changed.emit()
+
+    def _trim_history(self) -> None:
+        """Drop the oldest finished jobs once the list gets long.
+
+        Until this existed, ``clear_finished()`` was the only thing that ever
+        removed a job, and it only ran when someone clicked "Clear finished".
+        Every job stayed for the life of the session holding its whole result
+        -- decoded artwork, waveform peaks, search results -- inside a
+        reference cycle that the app no longer collects, since v1.4.9 disables
+        the cyclic GC outright to avoid a native crash. "Bounded" was the
+        premise of that trade; this is what makes it true.
+
+        Finished jobs are dropped oldest-first, and running ones are never
+        touched, so the dock still shows recent history.
+        """
+        finished = [i for i in self._order if i in self._jobs and self._jobs[i].state.is_finished]
+        for job_id in finished[: max(0, len(finished) - MAX_FINISHED_JOBS)]:
+            self._jobs.pop(job_id, None)
+            self._order.remove(job_id)
 
     # -- inspection -----------------------------------------------------
     def job(self, job_id: str) -> Job | None:

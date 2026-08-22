@@ -9,10 +9,20 @@ from __future__ import annotations
 
 import json
 import re
+import subprocess
 from dataclasses import dataclass
 from pathlib import Path
 
 from . import ffmpeg
+
+#: How long to wait for ffprobe before giving up on a file.
+#:
+#: Reading a metadata header is a fraction of a second's work, so a wait that
+#: runs into minutes is a stalled process -- a file on disconnected storage, or
+#: a real-time virus scanner holding the read -- not slow progress. Waiting it
+#: out helps nobody and, when this runs anywhere near the GUI thread, is
+#: indistinguishable from the app having hung.
+PROBE_TIMEOUT_S = 15.0
 
 #: Codecs that carry every original sample. Converting between any two of these
 #: is a true bit-preserving operation; converting *into* one from anything else
@@ -154,7 +164,7 @@ def probe(path: str | Path) -> AudioInfo:
             "-of", "json",
             str(path),
         ],
-        timeout=60,
+        timeout=PROBE_TIMEOUT_S,
     )
     data = json.loads(output or "{}")
     streams = data.get("streams") or []
@@ -196,10 +206,22 @@ def try_probe(path: str | Path) -> AudioInfo | None:
 
     Used when scanning folders, where hitting one unreadable file must not
     abort the whole import.
+
+    ``subprocess.TimeoutExpired`` is in the list deliberately: it derives from
+    ``SubprocessError``, not ``OSError``, so without naming it a timed-out
+    ffprobe was the one failure this function did *not* absorb -- and a
+    timeout is exactly the case callers most need it to.
     """
     try:
         return probe(path)
-    except (OSError, ValueError, json.JSONDecodeError, ffmpeg.FFmpegError, ffmpeg.FFmpegNotFound):
+    except (
+        OSError,
+        ValueError,
+        json.JSONDecodeError,
+        subprocess.TimeoutExpired,
+        ffmpeg.FFmpegError,
+        ffmpeg.FFmpegNotFound,
+    ):
         return None
 
 

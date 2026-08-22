@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 from pathlib import Path
 
 from PySide6.QtCore import QSize, Qt
@@ -51,6 +52,23 @@ PAGES = [
 ]
 
 
+def _job_concurrency() -> int:
+    """How many jobs may run at once.
+
+    Transcoding is CPU-bound and ffmpeg threads internally, so this is
+    deliberately well below the core count -- a job per core thrashes the disk
+    and makes the machine unpleasant to use.
+
+    It is equally deliberately above two, which is what this was. Every
+    background operation in the app shares this pool, so with only two slots a
+    single stuck job -- a download waiting on a dead host, a probe against
+    unresponsive storage -- halves the app's capacity, and two stuck jobs stop
+    every future action in every panel, permanently. Headroom here is what
+    keeps one wedged operation from presenting as the whole app having frozen.
+    """
+    return max(4, (os.cpu_count() or 4) // 2)
+
+
 def _app_icon() -> QIcon | None:
     """Locate the icon, whether running from source or from a frozen bundle."""
     import sys
@@ -76,7 +94,7 @@ class MainWindow(QMainWindow):
         clear_preview_cache()
         self.settings = get_settings()
         self.library = Library()
-        self.jobs = JobQueue(max_concurrent=2)
+        self.jobs = JobQueue(max_concurrent=_job_concurrency())
 
         self.setWindowTitle(f"{APP_NAME} {__version__}")
         icon = _app_icon()

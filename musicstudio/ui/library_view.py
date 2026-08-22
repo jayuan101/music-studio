@@ -783,23 +783,39 @@ class LibraryPanel(QWidget):
         explicitly given, so a plain top-level watch would miss files
         dropped into an album subfolder. Re-walking on every sync also
         picks up subfolders created since the last sync.
+
+        The walk itself runs in the background: ``rglob("*")`` enumerates and
+        stats every file under every remembered root, and this is called from
+        the constructor (delaying first paint) and before every import. Only
+        handing the finished list to the watcher happens on the GUI thread.
         """
+        roots = [str(p) for p in get_settings().library_paths]
+
+        def work(_context, targets):
+            directories: set[str] = set()
+            for root in targets:
+                root_path = Path(root)
+                if not root_path.is_dir():
+                    continue
+                directories.add(str(root_path))
+                for sub in root_path.rglob("*"):
+                    if sub.is_dir():
+                        directories.add(str(sub))
+            return sorted(directories)
+
+        job = self.jobs.submit_func(
+            "Watching library folders", work, roots, category="library"
+        )
+        job.signals.finished.connect(self._on_watched_roots_scanned)
+
+    def _on_watched_roots_scanned(self, _job_id: str, state: str, payload) -> None:
+        if state != "succeeded":
+            return
         existing = self._watcher.directories()
         if existing:
             self._watcher.removePaths(existing)
-
-        directories: set[str] = set()
-        for root in get_settings().library_paths:
-            root_path = Path(root)
-            if not root_path.is_dir():
-                continue
-            directories.add(str(root_path))
-            for sub in root_path.rglob("*"):
-                if sub.is_dir():
-                    directories.add(str(sub))
-
-        if directories:
-            self._watcher.addPaths(sorted(directories))
+        if payload:
+            self._watcher.addPaths(payload)
 
     def _on_watched_dir_changed(self, _path: str) -> None:
         self._rescan_timer.start()
@@ -855,28 +871,64 @@ class LibraryPanel(QWidget):
                 return
 
             self.about_to_write.emit(paths)
-            result = library_ops.send_to_trash(self.library, paths)
-            crash_log.debug(
-                f"delete: trashed={len(result.trashed)} failed={len(result.failed)} "
-                f"{result.failed!r}"
+            # send_to_trash retries a locked file five times, sleeping half a
+            # second between attempts -- up to 2.5 s per file, and files being
+            # locked by an indexer or virus scanner is exactly why that retry
+            # exists. Inline, deleting a handful of locked files froze the
+            # window for as long as it took to work through them.
+            self.status_label.setText(f"Deleting {len(paths)} file(s)…")
+
+            def work(_context, targets):
+                return library_ops.send_to_trash(self.library, targets)
+
+            job = self.jobs.submit_func(
+                f"Deleting {len(paths)} file(s)", work, paths, category="library"
             )
-            self.refresh()
-            if result.failed:
-                failed_text = "; ".join(f"{p.name}: {err}" for p, err in result.failed)
-                self.status_label.setText(
-                    f"Deleted {len(result.trashed)} file(s); {len(result.failed)} failed: {failed_text}"
-                )
-            else:
-                self.status_label.setText(f"Deleted {len(result.trashed)} file(s) (sent to Recycle Bin)")
+            job.signals.finished.connect(self._on_deleted)
         except Exception as exc:  # noqa: BLE001 -- temporary diagnostic visibility
             import traceback
 
             crash_log.debug(f"delete: unhandled exception: {exc!r}\n{traceback.format_exc()}")
             raise
 
+    def _on_deleted(self, _job_id: str, state: str, payload) -> None:
+        self.refresh()
+        if state != "succeeded" or payload is None:
+            crash_log.debug(f"delete: job ended {state}: {payload!r}")
+            self.status_label.setText(f"Delete failed: {payload}")
+            return
+        result = payload
+        crash_log.debug(
+            f"delete: trashed={len(result.trashed)} failed={len(result.failed)} "
+            f"{result.failed!r}"
+        )
+        if result.failed:
+            failed_text = "; ".join(f"{p.name}: {err}" for p, err in result.failed)
+            self.status_label.setText(
+                f"Deleted {len(result.trashed)} file(s); {len(result.failed)} failed: {failed_text}"
+            )
+        else:
+            self.status_label.setText(f"Deleted {len(result.trashed)} file(s) (sent to Recycle Bin)")
+
     def _find_duplicates(self) -> None:
         """Open a report of tracks that share an artist and title."""
-        groups = self.library.find_duplicates()
+        # Reads and groups every row in the library. Cheap at today's size,
+        # but it grows with the library and every other Library action already
+        # runs in the background.
+        self.status_label.setText("Looking for duplicates…")
+
+        def work(_context):
+            return self.library.find_duplicates()
+
+        job = self.jobs.submit_func("Finding duplicates", work, category="library")
+        job.signals.finished.connect(self._on_duplicates_found)
+
+    def _on_duplicates_found(self, _job_id: str, state: str, payload) -> None:
+        self.status_label.setText("")
+        if state != "succeeded":
+            QMessageBox.warning(self, "Find duplicates", f"Could not scan the library: {payload}")
+            return
+        groups = payload or []
         if not groups:
             QMessageBox.information(
                 self, "No duplicates found", "No duplicate songs were found in your library."
@@ -928,8 +980,24 @@ class LibraryPanel(QWidget):
 
     def remove_missing(self) -> None:
         """Drop rows whose files are no longer on disk."""
-        removed = self.library.prune_missing()
+        # One stat per indexed track. Fast on a healthy local disk, but the
+        # reason tracks go missing in the first place is usually storage that
+        # is *not* healthy -- a removable drive, a network share -- where each
+        # stat can hang. That is precisely when the window must stay alive.
+        self.status_label.setText("Checking which files are still on disk…")
+
+        def work(_context):
+            return self.library.prune_missing()
+
+        job = self.jobs.submit_func("Removing missing tracks", work, category="library")
+        job.signals.finished.connect(self._on_missing_removed)
+
+    def _on_missing_removed(self, _job_id: str, state: str, payload) -> None:
         self.refresh()
+        if state != "succeeded":
+            self.status_label.setText(f"Could not check for missing files: {payload}")
+            return
+        removed = payload or 0
         self.status_label.setText(
             f"Removed {removed} track(s) whose files are gone"
             if removed

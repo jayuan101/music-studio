@@ -27,6 +27,7 @@ from ..core import tag_fix as tag_fix_module
 from ..core import tags as tags_module
 from . import theme
 from .widgets.art_picker import choose_artwork
+from .widgets.async_read import AsyncTagReader
 from .common import card, heading, row, safe_pixmap, section_label, spacer
 
 ART_PREVIEW_SIZE = 190
@@ -165,6 +166,11 @@ class TagPanel(QWidget):
         self._paths: list[Path] = []
         self._tags = tags_module.TagSet()
         self._artwork: tags_module.Artwork | None = None
+        # Tags are read off the GUI thread; see AsyncTagReader. Built before
+        # _build() because wiring up the file list can select a row, and that
+        # immediately asks for a read.
+        self._tag_reader = AsyncTagReader(self)
+        self._tag_reader.ready.connect(self._on_tags_ready)
         self._build()
 
     def _build(self) -> None:
@@ -353,10 +359,33 @@ class TagPanel(QWidget):
     def _load_current(self, *_) -> None:
         path = self._current_path()
         if path is None:
+            self._tag_reader.cancel()
             self._clear_form()
             return
 
-        self._tags = tags_module.try_read(path)
+        # Reading tags reads the embedded cover art too, which is real disk
+        # work; doing it inline here stalled the window on every row click.
+        result = self._tag_reader.request(path)
+        if result is not False:
+            self._apply_loaded_tags(path, result)
+            return
+
+        # Saving edits the form back onto self._tags, so the form must not be
+        # editable against the *previous* track's tags while this read is in
+        # flight -- clear it and hold Save until the real values arrive.
+        self._clear_form()
+        self.save_button.setEnabled(False)
+        self.status_label.setText(f"Reading {path.name}…")
+
+    def _on_tags_ready(self, path: Path, tags) -> None:
+        # Ignore a read that landed after the user clicked on to another row.
+        current = self._current_path()
+        if current is None or Path(current) != Path(path):
+            return
+        self._apply_loaded_tags(Path(path), tags)
+
+    def _apply_loaded_tags(self, path: Path, tags) -> None:
+        self._tags = tags if tags is not None else tags_module.TagSet()
         self._set_fields(self._tags)
 
         self._artwork = self._tags.artwork
@@ -367,6 +396,7 @@ class TagPanel(QWidget):
             self.art_view.clear_art()
             self.art_label.setText("None embedded")
 
+        self.save_button.setEnabled(bool(self._paths))
         self.status_label.setText(str(path))
 
     def _collect(self) -> tags_module.TagSet:
