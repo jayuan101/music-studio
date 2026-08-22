@@ -21,7 +21,7 @@ import threading
 import time
 from dataclasses import dataclass
 from pathlib import Path
-from urllib.parse import quote
+from urllib.parse import quote, urlparse
 
 import httpx
 
@@ -177,6 +177,98 @@ def _client(settings: Settings, timeout: float = 20.0) -> httpx.Client:
 # ---------------------------------------------------------------------------
 # MusicBrainz + Cover Art Archive
 # ---------------------------------------------------------------------------
+
+
+#: Refuse anything larger than this. Cover art is a few hundred KB; a link
+#: that turns out to point at a video or a disk image should fail fast rather
+#: than stream gigabytes into memory and take the app down with it.
+MAX_REMOTE_IMAGE_BYTES = 32 * 1024 * 1024
+
+#: Magic-number sniffing, because Content-Type cannot be trusted: plenty of
+#: hosts serve images as application/octet-stream, and some serve an HTML
+#: error page with an image/jpeg header. These are the formats Qt renders and
+#: every tag container this app writes can carry.
+_IMAGE_SIGNATURES: tuple[tuple[bytes, str], ...] = (
+    (b"\xff\xd8\xff", "JPEG"),
+    (b"\x89PNG\r\n\x1a\n", "PNG"),
+    (b"GIF87a", "GIF"),
+    (b"GIF89a", "GIF"),
+    (b"BM", "BMP"),
+)
+
+
+def looks_like_image(data: bytes) -> str | None:
+    """Return the format name if ``data`` starts with a known image signature.
+
+    WebP needs its own check because the format marker sits at byte 8, after
+    the RIFF container header, rather than at the very start.
+    """
+    for signature, name in _IMAGE_SIGNATURES:
+        if data.startswith(signature):
+            return name
+    if data[:4] == b"RIFF" and data[8:12] == b"WEBP":
+        return "WEBP"
+    return None
+
+
+def fetch_image_url(url: str, settings: Settings | None = None) -> bytes:
+    """Download cover art from any image URL.
+
+    Deliberately domain-agnostic: the point is to paste a link from wherever
+    the good art actually is -- Discogs, Bandcamp, Genius, a label's own site,
+    an image search result -- so there is no allowlist to keep up to date.
+
+    What *is* checked is that the bytes are really an image, since the common
+    failure is pasting the URL of the *page* showing a picture rather than of
+    the picture itself. That returns HTML, and without this check it would be
+    written into the file as cover art and simply render as a broken box.
+
+    Raises :class:`ArtworkError` with a message worth showing the user.
+    """
+    url = url.strip()
+    if not url:
+        raise ArtworkError("No image link was given")
+    scheme = urlparse(url).scheme.lower()
+    if scheme not in ("http", "https"):
+        raise ArtworkError("An image link must start with http:// or https://")
+
+    settings = settings or get_settings()
+    try:
+        with _client(settings) as client:
+            with client.stream("GET", url) as response:
+                response.raise_for_status()
+                declared = response.headers.get("content-length")
+                if declared and declared.isdigit() and int(declared) > MAX_REMOTE_IMAGE_BYTES:
+                    raise ArtworkError("That image is too large to embed (over 32 MB)")
+                chunks: list[bytes] = []
+                total = 0
+                for chunk in response.iter_bytes():
+                    chunks.append(chunk)
+                    total += len(chunk)
+                    if total > MAX_REMOTE_IMAGE_BYTES:
+                        raise ArtworkError("That image is too large to embed (over 32 MB)")
+    except httpx.HTTPStatusError as exc:
+        # Read the status defensively: an HTTPStatusError is not guaranteed to
+        # carry a response, and losing the real error to an AttributeError
+        # raised while building its message would be a poor trade.
+        status = getattr(exc.response, "status_code", None)
+        raise ArtworkError(
+            f"The server refused that link (HTTP {status})"
+            if status is not None
+            else "The server refused that link"
+        ) from exc
+    except httpx.HTTPError as exc:
+        raise ArtworkError(f"Could not reach that link: {exc}") from exc
+
+    data = b"".join(chunks)
+    if not data:
+        raise ArtworkError("That link returned nothing")
+    if looks_like_image(data) is None:
+        raise ArtworkError(
+            "That link is not a direct image. Open the picture on its own "
+            "first (right-click it and copy the image address), then paste that."
+        )
+    return data
 
 
 def _build_musicbrainz_query(artist: str, album: str) -> str:

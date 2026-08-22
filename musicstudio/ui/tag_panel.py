@@ -4,12 +4,13 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from PySide6.QtCore import Qt, Signal
-from PySide6.QtGui import QPixmap
+from PySide6.QtCore import QBuffer, QIODevice, Qt, Signal
+from PySide6.QtGui import QGuiApplication, QImage, QKeySequence, QPixmap
 from PySide6.QtWidgets import (
     QComboBox,
     QFileDialog,
     QFormLayout,
+    QInputDialog,
     QLabel,
     QLineEdit,
     QListWidget,
@@ -31,16 +32,42 @@ from .common import card, heading, row, safe_pixmap, section_label, spacer
 ART_PREVIEW_SIZE = 190
 
 
+def _image_to_png_bytes(image: QImage) -> bytes | None:
+    """Encode a QImage the clipboard handed us as PNG bytes.
+
+    Copying a picture from a browser usually puts raw image *data* on the
+    clipboard rather than a URL, so there is no file and no link to fetch --
+    the pixels have to be re-encoded here to become something writable into
+    a tag. PNG because it is lossless and every container this app writes
+    accepts it.
+    """
+    if image.isNull():
+        return None
+    buffer = QBuffer()
+    buffer.open(QIODevice.WriteOnly)
+    if not image.save(buffer, "PNG"):
+        return None
+    return bytes(buffer.data())
+
+
 class ArtworkView(QLabel):
     """Cover art preview that accepts a dropped or pasted image."""
 
     image_dropped = Signal(bytes)
+    #: A web image was dropped or pasted as a link. Downloading it is not this
+    #: widget's job -- it must happen off the GUI thread -- so the URL goes up
+    #: to whoever owns a job queue.
+    image_url_dropped = Signal(str)
 
     def __init__(self, parent=None) -> None:
         super().__init__(parent)
         self.setFixedSize(ART_PREVIEW_SIZE, ART_PREVIEW_SIZE)
         self.setAlignment(Qt.AlignCenter)
         self.setAcceptDrops(True)
+        # Needed for Ctrl+V to reach keyPressEvent at all; without it the
+        # widget never takes focus and the paste the docstring promises
+        # silently does nothing.
+        self.setFocusPolicy(Qt.StrongFocus)
         self.clear_art()
 
     def clear_art(self) -> None:
@@ -71,14 +98,55 @@ class ArtworkView(QLabel):
             event.acceptProposedAction()
 
     def dropEvent(self, event) -> None:
-        for url in event.mimeData().urls():
+        if self._accept_mime(event.mimeData()):
+            event.acceptProposedAction()
+
+    def keyPressEvent(self, event) -> None:
+        if event.matches(QKeySequence.Paste):
+            if self._accept_mime(QGuiApplication.clipboard().mimeData()):
+                event.accept()
+                return
+        super().keyPressEvent(event)
+
+    def _accept_mime(self, mime) -> bool:
+        """Take cover art out of dropped or pasted clipboard data.
+
+        Ordered most-specific first. A drag from a browser typically carries
+        several representations at once -- the image bytes *and* its URL *and*
+        the surrounding page's URL -- and taking the raw bytes when they are
+        offered avoids a network round trip and works on sites that refuse a
+        direct request for the image.
+        """
+        if mime is None:
+            return False
+
+        # A local file, whether dragged from Explorer or copied there.
+        for url in mime.urls():
             if url.isLocalFile():
                 try:
                     self.image_dropped.emit(Path(url.toLocalFile()).read_bytes())
                 except OSError:
                     continue
-                event.acceptProposedAction()
-                return
+                return True
+
+        # Raw pixels straight off the clipboard.
+        if mime.hasImage():
+            data = _image_to_png_bytes(QImage(mime.imageData()))
+            if data:
+                self.image_dropped.emit(data)
+                return True
+
+        # A remote image, either dragged from a page or pasted as a link.
+        for url in mime.urls():
+            if url.scheme().lower() in ("http", "https"):
+                self.image_url_dropped.emit(url.toString())
+                return True
+        if mime.hasText():
+            text = mime.text().strip()
+            if text.lower().startswith(("http://", "https://")):
+                self.image_url_dropped.emit(text)
+                return True
+        return False
 
 
 class TagPanel(QWidget):
@@ -164,6 +232,11 @@ class TagPanel(QWidget):
         # -- artwork column ---------------------------------------------
         self.art_view = ArtworkView()
         self.art_view.image_dropped.connect(self._set_artwork_bytes)
+        self.art_view.image_url_dropped.connect(self._fetch_artwork_url)
+        self.art_view.setToolTip(
+            "Drop or paste a picture here — a file, an image copied from a "
+            "web page, or a link to one."
+        )
 
         self.art_label = QLabel("—")
         self.art_label.setObjectName("Hint")
@@ -173,6 +246,9 @@ class TagPanel(QWidget):
         self.fetch_art_button.clicked.connect(self._fetch_artwork)
         choose_art = QPushButton("Choose image…")
         choose_art.clicked.connect(self._choose_artwork)
+        paste_art_url = QPushButton("From link…")
+        paste_art_url.setToolTip("Paste the address of an image from any website")
+        paste_art_url.clicked.connect(self._paste_artwork_url)
         remove_art = QPushButton("Remove")
         remove_art.setObjectName("Danger")
         remove_art.clicked.connect(self._remove_artwork)
@@ -186,6 +262,7 @@ class TagPanel(QWidget):
         art_layout.addWidget(self.art_label)
         art_layout.addWidget(self.fetch_art_button)
         art_layout.addWidget(choose_art)
+        art_layout.addWidget(paste_art_url)
         art_layout.addWidget(remove_art)
         art_layout.addStretch(1)
 
@@ -327,6 +404,40 @@ class TagPanel(QWidget):
         self._artwork = tags_module.Artwork(b"")
         self.art_view.clear_art()
         self.art_label.setText("Will be removed on save")
+
+    def _paste_artwork_url(self) -> None:
+        url, accepted = QInputDialog.getText(
+            self,
+            "Cover art from a link",
+            "Paste the address of an image.\n"
+            "On a web page, right-click the picture and choose "
+            "“Copy image address” — any site works.",
+        )
+        if accepted and url.strip():
+            self._fetch_artwork_url(url.strip())
+
+    def _fetch_artwork_url(self, url: str) -> None:
+        """Download a remote image and use it as the cover.
+
+        Off the GUI thread: a slow or unreachable host would otherwise freeze
+        the whole window for as long as the request takes to time out.
+        """
+        self.art_label.setText("Downloading…")
+
+        def work(context, link):
+            context.progress(None, "Downloading image")
+            return artwork_module.fetch_image_url(link)
+
+        job = self.jobs.submit_func(
+            "Cover art from link", work, url, category="artwork"
+        )
+        job.signals.finished.connect(self._on_artwork_url_fetched)
+
+    def _on_artwork_url_fetched(self, _job_id: str, state: str, payload) -> None:
+        if state != "succeeded":
+            self.art_label.setText(str(payload))
+            return
+        self._set_artwork_bytes(payload)
 
     def _fetch_artwork(self) -> None:
         tags = self._collect()

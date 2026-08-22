@@ -45,6 +45,36 @@ class FakeResponse:
             raise httpx.HTTPStatusError("error", request=None, response=None)
 
 
+class FakeStream:
+    """A streamed FakeResponse, used as ``with client.stream(...) as r``."""
+
+    def __init__(self, response, chunk_size=8192):
+        self._response = response
+        self._chunk_size = chunk_size
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *args):
+        return False
+
+    @property
+    def status_code(self):
+        return self._response.status_code
+
+    @property
+    def headers(self):
+        return getattr(self._response, "headers", {})
+
+    def raise_for_status(self):
+        self._response.raise_for_status()
+
+    def iter_bytes(self):
+        content = self._response.content
+        for start in range(0, len(content), self._chunk_size):
+            yield content[start : start + self._chunk_size]
+
+
 class FakeClient:
     """Stands in for httpx.Client, routing by URL substring."""
 
@@ -58,12 +88,19 @@ class FakeClient:
     def __exit__(self, *args):
         return False
 
-    def get(self, url, params=None, **kwargs):
-        self.calls.append((url, params))
+    def _match(self, url):
         for fragment, response in self.routes.items():
             if fragment in url:
                 return response() if callable(response) else response
         return FakeResponse(status_code=404)
+
+    def get(self, url, params=None, **kwargs):
+        self.calls.append((url, params))
+        return self._match(url)
+
+    def stream(self, _method, url, **kwargs):
+        self.calls.append((url, None))
+        return FakeStream(self._match(url))
 
 
 def install_client(monkeypatch, routes) -> FakeClient:
@@ -456,3 +493,66 @@ def test_batch_continues_past_a_failing_file(monkeypatch, tone_flac, tmp_path, c
     results = artwork.update_library_artwork([broken, tone_flac])
     assert len(results) == 2
     assert sum(1 for r in results if r.updated) == 1
+
+
+# ---------------------------------------------------------------------------
+# Cover art from an arbitrary image URL
+# ---------------------------------------------------------------------------
+
+
+def test_looks_like_image_recognises_every_format_qt_renders(cover_png):
+    assert artwork.looks_like_image(cover_png) == "PNG"
+    assert artwork.looks_like_image(b"\xff\xd8\xff\xe0rest") == "JPEG"
+    assert artwork.looks_like_image(b"GIF89a...") == "GIF"
+    assert artwork.looks_like_image(b"BM- - -") == "BMP"
+    # WebP's marker sits after the RIFF header, not at byte 0.
+    assert artwork.looks_like_image(b"RIFF\x00\x00\x00\x00WEBPVP8 ") == "WEBP"
+    assert artwork.looks_like_image(b"<!doctype html><html>") is None
+
+
+def test_fetches_an_image_from_any_domain(monkeypatch, cover_png):
+    """No allowlist: a link to a random host is fetched like any other."""
+    install_client(monkeypatch, {
+        "cdn.example-label.net": FakeResponse(content=cover_png),
+    })
+    assert artwork.fetch_image_url("https://cdn.example-label.net/art/cover.png") == cover_png
+
+
+def test_a_link_to_a_page_rather_than_an_image_is_rejected(monkeypatch):
+    """The common mistake: copying the page's address, not the picture's."""
+    install_client(monkeypatch, {
+        "example.com": FakeResponse(content=b"<!doctype html><html>a page</html>"),
+    })
+    with pytest.raises(artwork.ArtworkError, match="not a direct image"):
+        artwork.fetch_image_url("https://example.com/album/nevermind")
+
+
+def test_a_non_http_link_is_rejected_without_a_request(monkeypatch):
+    client = install_client(monkeypatch, {})
+    with pytest.raises(artwork.ArtworkError, match="http"):
+        artwork.fetch_image_url("file:///C:/secrets.txt")
+    assert client.calls == []
+
+
+def test_an_empty_link_is_rejected(monkeypatch):
+    install_client(monkeypatch, {})
+    with pytest.raises(artwork.ArtworkError, match="No image link"):
+        artwork.fetch_image_url("   ")
+
+
+def test_a_server_error_is_reported_with_its_status(monkeypatch):
+    install_client(monkeypatch, {
+        "hotlink-protected.example": FakeResponse(status_code=403),
+    })
+    with pytest.raises(artwork.ArtworkError, match="refused"):
+        artwork.fetch_image_url("https://hotlink-protected.example/cover.jpg")
+
+
+def test_an_oversized_image_is_refused_rather_than_buffered(monkeypatch):
+    """A link that turns out to be a video must not stream into memory."""
+    oversized = b"\xff\xd8\xff" + b"\x00" * (artwork.MAX_REMOTE_IMAGE_BYTES + 1)
+    install_client(monkeypatch, {
+        "example.com": FakeResponse(content=oversized),
+    })
+    with pytest.raises(artwork.ArtworkError, match="too large"):
+        artwork.fetch_image_url("https://example.com/not-really-a-cover.jpg")
