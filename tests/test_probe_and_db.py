@@ -555,3 +555,42 @@ def test_normalized_flac_does_not_collide_with_an_existing_file(library, tmp_pat
     assert imported == 1
     assert (folder / "video.flac").exists()
     assert (folder / "video (2).flac").exists()
+
+
+# ---------------------------------------------------------------------------
+# try_probe's failure contract
+# ---------------------------------------------------------------------------
+
+
+def test_try_probe_absorbs_a_timed_out_ffprobe(monkeypatch, tone_flac):
+    """A stalled ffprobe must come back as None, not as an exception.
+
+    ``subprocess.TimeoutExpired`` derives from ``SubprocessError``, not
+    ``OSError``, so it was the one failure this function did not absorb --
+    and it escaped into whichever GUI slot asked for the probe.
+    """
+    import subprocess
+
+    def explode(*_args, **_kwargs):
+        raise subprocess.TimeoutExpired(cmd="ffprobe", timeout=probe.PROBE_TIMEOUT_S)
+
+    monkeypatch.setattr(probe.ffmpeg, "run", explode)
+    assert probe.try_probe(tone_flac) is None
+
+
+def test_probe_does_not_wait_indefinitely(monkeypatch, tone_flac):
+    """The probe must pass a real timeout down to the subprocess.
+
+    Without one, a process that never returns holds whoever called it for
+    the life of the app.
+    """
+    seen = {}
+
+    def capture(command, *, timeout=None):
+        seen["timeout"] = timeout
+        raise probe.ffmpeg.FFmpegError("stop here", command=command, stderr="", returncode=1)
+
+    monkeypatch.setattr(probe.ffmpeg, "run", capture)
+    probe.try_probe(tone_flac)
+    assert seen["timeout"] == probe.PROBE_TIMEOUT_S
+    assert 0 < probe.PROBE_TIMEOUT_S <= 30
