@@ -234,6 +234,26 @@ Output lands in `dist/MusicStudio/`. CI does this automatically — see
 `.github/workflows/build.yml`, which runs on `v*` tags or on demand, and
 downloads ffmpeg itself.
 
+### Installing it properly
+
+A build in `dist/` runs fine, but it is a loose folder: no Start Menu entry,
+nothing in Add or Remove Programs, and it breaks if you move the folder.
+To turn a build into an installed application:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File scripts\install.ps1
+```
+
+That copies the build to `%LOCALAPPDATA%\Programs\Music Studio`, creates
+Start Menu and desktop shortcuts, and registers an uninstaller so it appears
+in **Settings → Apps** like any other program. It installs for the current
+user, so there is no administrator prompt.
+
+Running it again over an existing install upgrades in place. Uninstalling —
+from Settings, or `uninstall.ps1` in the install folder — removes the app but
+deliberately keeps your music, library index and settings, since those live
+under `%APPDATA%` and your Music folder rather than inside the install.
+
 ---
 
 ## Tests
