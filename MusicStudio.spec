@@ -18,6 +18,24 @@ block_cipher = None
 PROJECT_ROOT = Path(SPECPATH)
 VENDOR_FFMPEG = PROJECT_ROOT / "vendor" / "ffmpeg"
 
+# Refuse to build from an environment that doesn't satisfy requirements.txt.
+# v1.4.9 froze yt-dlp 2026.7.4 while requirements.txt already asked for
+# >=2026.8.19; YouTube 403s that version, and the download panel reported only
+# "The download produced no audio files", so every download failed for a reason
+# nothing surfaced. Checking here means a stale venv fails the build instead of
+# shipping an app that looks fine until someone tries to use it.
+sys.path.insert(0, str(PROJECT_ROOT / "scripts"))
+import check_requirements  # noqa: E402
+
+_problems = check_requirements.check()
+if _problems:
+    _detail = ["Build stopped: this environment does not satisfy requirements.txt"]
+    _detail += [f"  - {p}" for p in _problems]
+    _detail.append("")
+    _detail.append("Fix it with:  python -m pip install -U -r requirements.txt")
+    raise SystemExit(chr(10).join(_detail))
+print("requirements check: build environment satisfies requirements.txt")
+
 binaries = []
 if VENDOR_FFMPEG.is_dir():
     for name in ("ffmpeg", "ffprobe"):
