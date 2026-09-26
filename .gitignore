@@ -18,3 +18,7 @@ build-backup/
 vendor/
 
 *.spec.bak
+
+# Assembled installer package (installer/ scripts + dist build) -- a build output.
+MusicStudio-Installer/
+build.log
