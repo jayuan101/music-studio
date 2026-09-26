@@ -116,11 +116,19 @@ if (-not $NoDesktopShortcut) {
 
 # -- uninstaller -----------------------------------------------------------
 Write-Step "Registering with Add or Remove Programs..."
-Copy-Item (Join-Path $PSScriptRoot "uninstall.ps1") (Join-Path $InstallDir "uninstall.ps1") -Force
+# The uninstaller lives beside the install, not in it: the in-app updater
+# (core/updater.py) mirrors each release over $InstallDir with robocopy /MIR,
+# which deletes anything the release zip doesn't ship -- so an uninstaller
+# kept inside would vanish on the first update and break Settings > Apps.
+$uninstallDir = "$InstallDir Uninstall"
+New-Item -ItemType Directory -Force -Path $uninstallDir | Out-Null
+Copy-Item (Join-Path $PSScriptRoot "uninstall.ps1") (Join-Path $uninstallDir "uninstall.ps1") -Force
+# Clean up the copy an older version of this script left inside $InstallDir.
+Remove-Item (Join-Path $InstallDir "uninstall.ps1") -Force -ErrorAction SilentlyContinue
 
 $sizeKB = [int]((Get-ChildItem $InstallDir -Recurse -File | Measure-Object Length -Sum).Sum / 1KB)
 New-Item -Path $RegKey -Force | Out-Null
-$uninstallCmd = "powershell.exe -NoProfile -ExecutionPolicy Bypass -File `"$InstallDir\uninstall.ps1`""
+$uninstallCmd = "powershell.exe -NoProfile -ExecutionPolicy Bypass -File `"$uninstallDir\uninstall.ps1`" -InstallDir `"$InstallDir`""
 @{
     DisplayName     = $AppName
     DisplayVersion  = $version

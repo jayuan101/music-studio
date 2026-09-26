@@ -13,6 +13,7 @@
 #>
 [CmdletBinding()]
 param(
+    [string]$InstallDir,
     [switch]$Silent
 )
 
@@ -22,11 +23,15 @@ $AppName = "Music Studio"
 $ExeName = "MusicStudio.exe"
 $RegKey  = "HKCU:\Software\Microsoft\Windows\CurrentVersion\Uninstall\MusicStudio"
 
-$installDir = Split-Path -Parent $PSCommandPath
+$scriptDir = Split-Path -Parent $PSCommandPath
+# install.ps1 passes -InstallDir and keeps this script in a sibling folder.
+# Installs from before that kept it inside the install directory itself.
+$installDir = if ($InstallDir) { $InstallDir } else { $scriptDir }
 
 if (-not $Silent) {
     $answer = $null
     try {
+        Add-Type -AssemblyName Microsoft.VisualBasic
         $answer = [Microsoft.VisualBasic.Interaction]::MsgBox(
             "Remove $AppName?`n`nYour music, library and settings are kept.",
             4 + 32, "Uninstall $AppName")
@@ -55,9 +60,12 @@ foreach ($link in $links) {
 if (Test-Path $RegKey) { Remove-Item $RegKey -Recurse -Force -ErrorAction SilentlyContinue }
 
 # -- files -----------------------------------------------------------------
-# This script lives inside the directory it is deleting, so the removal is
+# This script may live inside a directory it is deleting, so the removal is
 # handed to a detached process that waits for this one to exit first.
 $cmd = "Start-Sleep -Seconds 3; Remove-Item -LiteralPath '$installDir' -Recurse -Force -ErrorAction SilentlyContinue"
+if ($scriptDir -ne $installDir) {
+    $cmd += "; Remove-Item -LiteralPath '$scriptDir' -Recurse -Force -ErrorAction SilentlyContinue"
+}
 Start-Process powershell.exe -ArgumentList @(
     "-NoProfile", "-WindowStyle", "Hidden", "-ExecutionPolicy", "Bypass", "-Command", $cmd
 ) -WindowStyle Hidden

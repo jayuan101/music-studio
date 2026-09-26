@@ -250,7 +250,8 @@ in **Settings → Apps** like any other program. It installs for the current
 user, so there is no administrator prompt.
 
 Running it again over an existing install upgrades in place. Uninstalling —
-from Settings, or `uninstall.ps1` in the install folder — removes the app but
+from Settings, or `uninstall.ps1` in the `Music Studio Uninstall` folder next
+to the install (kept outside it so self-updates can't delete it) — removes the app but
 deliberately keeps your music, library index and settings, since those live
 under `%APPDATA%` and your Music folder rather than inside the install.
 
