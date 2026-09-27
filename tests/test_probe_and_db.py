@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import sys
+from pathlib import Path
 
 import httpx
 import pytest
@@ -430,6 +431,50 @@ def test_find_duplicates_never_counts_one_file_twice_via_a_junction(library, mus
     assert len(library.all_tracks()) == 2  # both spellings indexed, as happened
 
     assert library.find_duplicates() == []
+
+
+def _insert_raw_row(library, path, title="Song", artist="Band"):
+    conn = library._connect()
+    with conn:
+        conn.execute(
+            "INSERT INTO tracks (path, filename, title, artist) VALUES (?,?,?,?)",
+            (str(path), Path(path).name, title, artist),
+        )
+
+
+@pytest.mark.skipif(sys.platform != "win32", reason="junctions are Windows-only")
+def test_reopening_rewrites_old_junction_spellings_to_the_real_path(music_folder, tmp_path):
+    import _winapi
+
+    T.write(music_folder / "a.flac", T.TagSet(title="Song", artist="Band"))
+    alias = tmp_path / "alias"
+    _winapi.CreateJunction(str(music_folder), str(alias))
+    library = Library(tmp_path / "lib.db")
+    _insert_raw_row(library, alias / "a.flac")  # how an older build stored it
+
+    reopened = Library(tmp_path / "lib.db")
+
+    [row] = reopened.all_tracks()
+    assert row.path == (music_folder / "a.flac").resolve()
+    assert reopened.remove(music_folder / "a.flac")  # now actually matches
+    assert reopened.all_tracks() == []
+
+
+@pytest.mark.skipif(sys.platform != "win32", reason="junctions are Windows-only")
+def test_prune_missing_removes_old_spelling_rows_and_counts_honestly(music_folder, tmp_path):
+    """Pruning reported "661 missing removed" while deleting nothing: the rows
+    were stored under the junction spelling and removal only tried the
+    resolved one."""
+    import _winapi
+
+    alias = tmp_path / "alias"
+    _winapi.CreateJunction(str(music_folder), str(alias))
+    library = Library(tmp_path / "lib.db")
+    _insert_raw_row(library, alias / "gone.flac")  # file never existed
+
+    assert library.prune_missing() == 1
+    assert library.all_tracks() == []
+    assert library.prune_missing() == 0
 
 
 def test_find_duplicates_skips_tracks_with_a_blank_artist_or_title(library, music_folder):

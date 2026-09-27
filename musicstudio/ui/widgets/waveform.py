@@ -45,9 +45,14 @@ class WaveformData:
 def compute_peaks(path: str | Path, buckets: int = 2000, *, should_cancel=None) -> WaveformData:
     """Decode ``path`` and reduce it to ``buckets`` min/max pairs.
 
-    Raises :class:`~musicstudio.core.ffmpeg.FFmpegError` if decoding fails.
+    Raises :class:`~musicstudio.core.ffmpeg.FFmpegError` if decoding fails,
+    or FileNotFoundError if the file is gone.
     """
     path = Path(path)
+    if not path.exists():
+        # Say what is actually wrong: "could not decode" sent people looking
+        # for a codec problem when the file had simply been moved or deleted.
+        raise FileNotFoundError(f"the file no longer exists (moved or deleted): {path.name}")
     command = [
         str(ffmpeg.ffmpeg_path()),
         "-hide_banner", "-loglevel", "error",

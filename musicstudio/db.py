@@ -97,6 +97,36 @@ def _migrate(conn: sqlite3.Connection) -> None:
     )
 
 
+def _canonicalize_paths(conn: sqlite3.Connection) -> int:
+    """Rewrite stored paths to their resolved form; returns rows changed.
+
+    Every lookup (get, remove, upsert, auto-trim state) resolves the path
+    first, but rows written by older builds kept the unresolved spelling --
+    here C:\\Users\\...\\Music, a junction to D:\\UserData\\...\\Music. Those
+    rows could never be matched: deleting or pruning them silently did
+    nothing (while reporting "661 missing removed"), and the same file got a
+    second row under the other spelling. Where the resolved spelling already
+    has a row, the stale alias is simply dropped. Cheap and idempotent, so it
+    runs on every open.
+    """
+    changed = 0
+    rows = conn.execute("SELECT id, path FROM tracks").fetchall()
+    existing = {r["path"] for r in rows}
+    for row in rows:
+        stored = row["path"]
+        resolved = str(Path(stored).resolve())
+        if resolved == stored:
+            continue
+        if resolved in existing:
+            conn.execute("DELETE FROM tracks WHERE id = ?", (row["id"],))
+        else:
+            conn.execute("UPDATE tracks SET path = ? WHERE id = ?", (resolved, row["id"]))
+            existing.add(resolved)
+        existing.discard(stored)
+        changed += 1
+    return changed
+
+
 @dataclass
 class TrackRow:
     """One row of the library table, shaped for display."""
@@ -351,6 +381,7 @@ class Library:
         with self._connect() as conn:
             conn.executescript(_SCHEMA)
             _migrate(conn)
+            _canonicalize_paths(conn)
 
     # -- connection -----------------------------------------------------
     def _connect(self) -> sqlite3.Connection:
@@ -429,10 +460,15 @@ class Library:
                 (state, str(Path(path).resolve())),
             )
 
-    def remove(self, path: Path) -> None:
+    def remove(self, path: Path) -> bool:
+        """Drop ``path``'s row under either spelling. True if one was removed."""
         conn = self._connect()
         with conn:
-            conn.execute("DELETE FROM tracks WHERE path = ?", (str(Path(path).resolve()),))
+            cursor = conn.execute(
+                "DELETE FROM tracks WHERE path IN (?, ?)",
+                (str(Path(path).resolve()), str(Path(path))),
+            )
+        return cursor.rowcount > 0
 
     def clear(self) -> None:
         conn = self._connect()
@@ -443,8 +479,9 @@ class Library:
         """Drop rows whose files are gone. Returns how many were removed."""
         removed = 0
         for row in self.all_tracks():
-            if not row.path.exists():
-                self.remove(row.path)
+            # Count only rows actually deleted: this used to count every
+            # attempt, reporting removals that had silently matched nothing.
+            if not row.path.exists() and self.remove(row.path):
                 removed += 1
         return removed
 
