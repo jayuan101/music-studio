@@ -128,12 +128,15 @@ class JobsDock(QDockWidget):
         cancel_all.setObjectName("Danger")
         cancel_all.clicked.connect(self.queue.cancel_all)
 
+        # Summary above the buttons rather than beside them, so the panel can
+        # be narrow: one row of label + two buttons forced ~400 px of width
+        # and left every page squeezed beside it.
         header = QHBoxLayout()
         header.setContentsMargins(0, 0, 0, 0)
-        header.addWidget(self.summary_label)
-        header.addWidget(spacer(), 1)
         header.addWidget(cancel_all)
         header.addWidget(clear_button)
+        header.addWidget(spacer(), 1)
+        outer.addWidget(self.summary_label)
         outer.addLayout(header)
 
         self.list_widget = QWidget()
@@ -149,7 +152,10 @@ class JobsDock(QDockWidget):
         outer.addWidget(scroll, 1)
 
         self.setWidget(container)
-        self.setMinimumWidth(300)
+        self.setMinimumWidth(230)
+        # saveState/restoreState identify docks by objectName; without one
+        # the panel's width was never remembered between sessions.
+        self.setObjectName("JobsDock")
 
         queue.job_added.connect(self._on_job_added)
         queue.job_progress.connect(self._on_progress)

@@ -41,7 +41,8 @@ from ..core import library_ops
 from ..core import tags as tags_module
 from ..db import Library, TrackRow, scan_into_library
 from . import theme
-from .common import card, confirm_delete, format_size, heading, row, section_label, spacer
+from .common import card, confirm_delete, format_size, heading, section_label
+from .widgets.flow_layout import flow
 from .duplicates_dialog import DuplicatesDialog
 from .tag_panel import ArtworkView
 
@@ -360,18 +361,11 @@ class LibraryPanel(QWidget):
         )
         self.auto_trim_all_button.clicked.connect(self._auto_trim_all)
 
-        toolbar = QWidget()
-        toolbar_layout = QHBoxLayout(toolbar)
-        toolbar_layout.setContentsMargins(0, 0, 0, 0)
-        toolbar_layout.setSpacing(8)
-        toolbar_layout.addWidget(self.search_box, 1)
-        toolbar_layout.addWidget(add_files)
-        toolbar_layout.addWidget(add_folder)
-        toolbar_layout.addWidget(rescan)
-        toolbar_layout.addWidget(remove_missing)
-        toolbar_layout.addWidget(find_duplicates)
-        toolbar_layout.addWidget(self.auto_trim_all_button)
-        layout.addWidget(toolbar)
+        # Search gets its own full-width line; sharing a row with six buttons
+        # it was squeezed down to "Se...". The buttons wrap as width allows.
+        layout.addWidget(self.search_box)
+        layout.addWidget(flow(add_files, add_folder, rescan, remove_missing,
+                              find_duplicates, self.auto_trim_all_button))
 
         # -- table ------------------------------------------------------
         self.model = TrackTableModel(self)
@@ -454,13 +448,10 @@ class LibraryPanel(QWidget):
             self.ytmusic_button,
             self.delete_button,
         )
-        for button in buttons:
-            # Never narrower than the label: squeezed, they showed "Jpdate
-            # all artwork" and "uTube Music form".
-            button.ensurePolished()
-            button.setMinimumWidth(button.sizeHint().width())
+        # Wrapping, never squeezing: in one fixed row they cropped to "Jpdate
+        # all artwork" and "uTube Music form" whenever width ran short.
         layout.addWidget(self.status_label)
-        layout.addWidget(row(spacer(), *buttons))
+        layout.addWidget(flow(*buttons, align_right=True))
         self._update_actions()
 
     # -- data -----------------------------------------------------------

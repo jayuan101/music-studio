@@ -14,6 +14,7 @@ from PySide6.QtWidgets import (
     QListWidgetItem,
     QMainWindow,
     QMessageBox,
+    QScrollArea,
     QStackedWidget,
     QStatusBar,
     QVBoxLayout,
@@ -183,7 +184,17 @@ class MainWindow(QMainWindow):
             self.assistant_panel,
             self.settings_panel,
         ):
-            self.stack.addWidget(panel)
+            # Fill the space when there is room, scroll when there isn't --
+            # never squash. Without this a page taller than the window had
+            # its controls crushed (Convert's format dropdowns became thin
+            # empty bars at larger interface sizes).
+            page = QScrollArea()
+            page.setWidget(panel)
+            page.setWidgetResizable(True)
+            page.setFrameShape(QScrollArea.NoFrame)
+            page.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+            panel.setMinimumHeight(panel.sizeHint().height())
+            self.stack.addWidget(page)
         layout.addWidget(self.stack, 1)
 
         # -- persistent playback bar --------------------------------------
@@ -569,7 +580,7 @@ class MainWindow(QMainWindow):
         sized it from its longest job title and it took nearly half the
         window, squeezing every page into the rest."""
         width = self.width() or self.screen().availableGeometry().width()
-        target = max(300, min(420, int(width * 0.2)))
+        target = max(240, min(320, int(width * 0.16)))
         self.resizeDocks([self.jobs_dock], [target], Qt.Horizontal)
 
     def _save_geometry(self) -> None:
