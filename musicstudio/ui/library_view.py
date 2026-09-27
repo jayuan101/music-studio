@@ -206,6 +206,10 @@ class TrackTableModel(QAbstractTableModel):
         track = self._tracks[index.row()]
         column = index.column()
 
+        if role == Qt.ToolTipRole and column in (1, 2, 3, 4):
+            # Hover shows the full text of anything the column cuts off.
+            return self.data(index, Qt.DisplayRole)
+
         if role == Qt.DisplayRole:
             return [
                 str(track.track_number or ""),
@@ -387,10 +391,14 @@ class LibraryPanel(QWidget):
         header = self.table.horizontalHeader()
         header.setSectionResizeMode(0, QHeaderView.Fixed)
         header.resizeSection(0, 44)
+        # Title takes all the leftover width. Splitting it four ways with
+        # Artist/Album/Album Artist cut titles to "1 Hour ..." while Album
+        # Artist -- mostly "—" -- got just as much room. The others start at
+        # a sensible width and can still be dragged.
         header.setSectionResizeMode(1, QHeaderView.Stretch)
-        header.setSectionResizeMode(2, QHeaderView.Stretch)
-        header.setSectionResizeMode(3, QHeaderView.Stretch)
-        header.setSectionResizeMode(4, QHeaderView.Stretch)
+        for column, width in ((2, 170), (3, 170), (4, 130)):
+            header.setSectionResizeMode(column, QHeaderView.Interactive)
+            header.resizeSection(column, width)
         for column, width in ((5, 60), (6, 70), (7, 130), (8, 60), (9, 110)):
             header.setSectionResizeMode(column, QHeaderView.Fixed)
             header.resizeSection(column, width)
