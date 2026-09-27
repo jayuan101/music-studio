@@ -18,7 +18,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from PySide6.QtCore import Qt
+from PySide6.QtCore import Qt, Signal
 from PySide6.QtWidgets import (
     QCheckBox,
     QComboBox,
@@ -42,6 +42,12 @@ from .common import confirm_delete, format_size
 
 class DuplicatesDialog(QDialog):
     """Lists duplicate-song groups and deletes whichever copies are checked."""
+
+    #: Emitted with files about to be deleted, moved or re-tagged, so the main
+    #: window can stop playing them first -- Windows keeps a file locked for as
+    #: long as a player has it loaded, and every delete of a song that was
+    #: playing or open in the Editor failed with "being used by another process".
+    about_to_write = Signal(list)
 
     def __init__(self, library: Library, groups: list[DuplicateGroup], parent=None) -> None:
         super().__init__(parent)
@@ -198,6 +204,7 @@ class DuplicatesDialog(QDialog):
     def _delete_single(self, path: Path) -> None:
         if not confirm_delete(self, [path]):
             return
+        self._release([path])
         if self.merge_metadata_check.isChecked():
             self._merge_metadata_before_delete([path])
 
@@ -213,6 +220,7 @@ class DuplicatesDialog(QDialog):
         directory = QFileDialog.getExistingDirectory(self, "Move this copy to")
         if not directory:
             return
+        self._release([path])
         result = library_ops.move_files(self.library, [path], Path(directory))
         self.moved_paths.extend(result.moved)
         self.groups = _drop_deleted(self.groups, [old for old, _new in result.moved])
@@ -222,6 +230,15 @@ class DuplicatesDialog(QDialog):
             QMessageBox.warning(self, "Move failed", f"Could not move {failed_path.name}: {err}")
 
     # -- deleting -----------------------------------------------------------
+    def _release(self, paths: list[Path]) -> None:
+        """Ask the main window to unload these files, plus the keeper of each
+        group they belong to (merging tags writes into the keeper)."""
+        targets = set(paths)
+        for group in self.groups:
+            if any(t.path in targets for t in group.tracks):
+                targets.add(group.tracks[0].path)
+        self.about_to_write.emit(list(targets))
+
     def _checked_paths(self) -> list[Path]:
         paths = []
         for i in range(self.tree.topLevelItemCount()):
@@ -254,6 +271,7 @@ class DuplicatesDialog(QDialog):
             return
         if not confirm_delete(self, paths):
             return
+        self._release(paths)
 
         if self.merge_metadata_check.isChecked():
             self._merge_metadata_before_delete(paths)
@@ -279,6 +297,7 @@ class DuplicatesDialog(QDialog):
         directory = QFileDialog.getExistingDirectory(self, "Move duplicate copies to")
         if not directory:
             return
+        self._release(paths)
 
         result = library_ops.move_files(self.library, paths, Path(directory))
         self.moved_paths.extend(result.moved)

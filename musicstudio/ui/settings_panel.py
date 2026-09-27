@@ -32,7 +32,7 @@ from ..core import organise
 from ..core import secrets
 from ..core import spotify as spotify_module
 from ..core import updater as updater_module
-from . import theme
+from . import scaling, theme
 from .common import card, heading, row, section_label, spacer
 
 
@@ -70,6 +70,7 @@ class SettingsPanel(QWidget):
         layout.setContentsMargins(0, 0, 8, 0)
         layout.setSpacing(14)
 
+        layout.addWidget(self._build_appearance_card())
         layout.addWidget(self._build_output_card())
         layout.addWidget(self._build_quality_card())
         layout.addWidget(self._build_artwork_card())
@@ -291,6 +292,30 @@ class SettingsPanel(QWidget):
 
         return card(section_label("Editor"), form, self.gain_hint)
 
+    def _build_appearance_card(self) -> QWidget:
+        auto_percent = round(scaling.resolve("auto") * 100)
+        self.ui_scale = QComboBox()
+        for choice in scaling.CHOICES:
+            label = (f"Automatic — fit this screen ({auto_percent}%)"
+                     if choice == "auto" else f"{choice}%")
+            self.ui_scale.addItem(label, choice)
+        self.ui_scale.currentIndexChanged.connect(self._save)
+
+        hint = QLabel(
+            "Makes all text, buttons and panels larger or smaller together, like "
+            "zooming a web page. Takes effect the next time Music Studio starts."
+        )
+        hint.setObjectName("Hint")
+        hint.setWordWrap(True)
+
+        form = QWidget()
+        form_layout = QFormLayout(form)
+        form_layout.setContentsMargins(0, 0, 0, 0)
+        form_layout.setSpacing(8)
+        form_layout.addRow("Interface size", self.ui_scale)
+
+        return card(section_label("Appearance"), form, hint)
+
     def _build_download_card(self) -> QWidget:
         self.download_mode = QComboBox()
         self.download_mode.addItem("Keep the original stream (best quality)", "keep")
@@ -487,6 +512,12 @@ class SettingsPanel(QWidget):
     # -- load / save ----------------------------------------------------
     def _load(self) -> None:
         s = self.settings
+        index = self.ui_scale.findData(s.ui_scale)
+        if index < 0:  # a hand-edited percentage not in the list
+            self.ui_scale.addItem(f"{s.ui_scale}%", s.ui_scale)
+            index = self.ui_scale.count() - 1
+        self.ui_scale.setCurrentIndex(index)
+
         self.output_dir.setText(s.output_dir)
         self.filename_template.setText(s.filename_template)
         self.overwrite_existing.setChecked(s.overwrite_existing)
@@ -548,6 +579,7 @@ class SettingsPanel(QWidget):
         if self._loading:
             return
         s = self.settings
+        s.ui_scale = self.ui_scale.currentData() or "auto"
         s.output_dir = self.output_dir.text().strip() or s.output_dir
         s.filename_template = self.filename_template.text()
         s.overwrite_existing = self.overwrite_existing.isChecked()

@@ -139,6 +139,16 @@ class Player(QWidget):
         self._player.setSource(QUrl.fromLocalFile(str(Path(path).resolve())))
         self.setEnabled(True)
 
+    @property
+    def loaded_path(self) -> Path | None:
+        """The file the underlying QMediaPlayer actually has open, if any --
+        which is what holds the Windows file lock, whatever the queue or
+        editor believe is current."""
+        source = self._player.source()
+        if source.isEmpty() or not source.isLocalFile():
+            return None
+        return Path(source.toLocalFile())
+
     def clear(self) -> None:
         self._player.stop()
         self._player.setSource(QUrl())

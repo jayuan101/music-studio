@@ -239,11 +239,15 @@ QTabBar::tab:selected {{ color: {TEXT}; border-bottom-color: {ACCENT}; font-weig
 QTabBar::tab:hover {{ color: {TEXT}; }}
 
 /* -- Misc ------------------------------------------------------------- */
-QScrollBar:vertical {{ background: transparent; width: 10px; margin: 0; }}
-QScrollBar::handle:vertical {{ background: #39404e; border-radius: 5px; min-height: 30px; }}
-QScrollBar::handle:vertical:hover {{ background: #4a5364; }}
-QScrollBar:horizontal {{ background: transparent; height: 10px; }}
-QScrollBar::handle:horizontal {{ background: #39404e; border-radius: 5px; min-width: 30px; }}
+/* Wide, visible scrollbars with a tinted track: the old 10px bar in a colour
+   close to the background was hard to find and hard to grab. Clicking the
+   track pages the view, so the whole strip is a target, not just the handle. */
+QScrollBar:vertical {{ background: #1c2029; width: 14px; margin: 0; border-radius: 7px; }}
+QScrollBar::handle:vertical {{ background: #566074; border-radius: 6px; min-height: 48px; margin: 1px; }}
+QScrollBar::handle:vertical:hover, QScrollBar::handle:vertical:pressed {{ background: #7a869c; }}
+QScrollBar:horizontal {{ background: #1c2029; height: 14px; margin: 0; border-radius: 7px; }}
+QScrollBar::handle:horizontal {{ background: #566074; border-radius: 6px; min-width: 48px; margin: 1px; }}
+QScrollBar::handle:horizontal:hover, QScrollBar::handle:horizontal:pressed {{ background: #7a869c; }}
 QScrollBar::add-line, QScrollBar::sub-line {{ height: 0; width: 0; }}
 QScrollBar::add-page, QScrollBar::sub-page {{ background: transparent; }}
 

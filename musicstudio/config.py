@@ -167,6 +167,17 @@ class Settings:
     # -- UI -------------------------------------------------------------
     theme: str = "dark"
     library_paths: list[str] = field(default_factory=list)
+    #: Interface size: "auto" (picked from the screen, see ui/scaling.py) or a
+    #: percentage like "125". Applied at startup, so a change needs a restart.
+    ui_scale: str = "auto"
+    #: Main window size/position from the last session (QMainWindow.saveGeometry,
+    #: base64), and the interface size it was saved at -- a geometry saved at
+    #: one zoom is meaningless at another, so it is only restored if they match.
+    window_geometry: str = ""
+    #: Dock layout (QMainWindow.saveState, base64) -- keeps the Jobs panel at
+    #: whatever width the user dragged it to.
+    window_state: str = ""
+    window_geometry_scale: float = 0.0
 
     # -- Personal AI ------------------------------------------------------
     #: Local model backend. Ollama runs as a separate process the user

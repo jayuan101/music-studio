@@ -8,6 +8,7 @@ changed on disk is re-read rather than trusted.
 
 from __future__ import annotations
 
+import os
 import sqlite3
 import threading
 from dataclasses import dataclass
@@ -258,6 +259,24 @@ def _normalized_key(text: str) -> str:
     """Casefold and collapse whitespace, so "The Weeknd" and "the  weeknd "
     are recognised as the same artist/title when grouping duplicates."""
     return " ".join(text.split()).casefold()
+
+
+def _file_identity(path: Path) -> str:
+    """The same key for every spelling of one file: junctions and symlinks
+    resolved, case folded the way Windows compares paths."""
+    return os.path.normcase(os.path.realpath(path))
+
+
+def _one_row_per_file(tracks: list["TrackRow"]) -> list["TrackRow"]:
+    """Keep the first row for each physical file; drop other spellings of it."""
+    seen: set[str] = set()
+    unique = []
+    for track in tracks:
+        identity = _file_identity(track.path)
+        if identity not in seen:
+            seen.add(identity)
+            unique.append(track)
+    return unique
 
 
 def _quality_sort_key(t: "TrackRow") -> tuple:
@@ -573,6 +592,12 @@ class Library:
 
         result: list[DuplicateGroup] = []
         for tracks in groups.values():
+            # One file can be indexed under two paths -- here C:\Users\...\Music
+            # is a junction to D:\UserData\...\Music, and both spellings got
+            # rows. Those are not two copies: "deleting the extra copy" deleted
+            # the only one, which is how a duplicates clean-up once sent 655
+            # songs to the Recycle Bin. Count each physical file once.
+            tracks = _one_row_per_file(tracks)
             if len(tracks) < 2:
                 continue
             tracks.sort(key=sort_key)

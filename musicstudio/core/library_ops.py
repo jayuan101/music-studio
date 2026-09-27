@@ -66,6 +66,15 @@ def send_to_trash(library: Library, paths: list[Path]) -> TrashResult:
     failed: list[tuple[Path, str]] = []
     for path in paths:
         path = Path(path)
+        if not path.exists():
+            # Already gone (deleted outside the app, or by an earlier attempt
+            # whose index update was lost). The user's intent -- this track out
+            # of the library -- is satisfied by dropping the stale row; retrying
+            # a missing file only froze the window for 2.5 s each and reported
+            # a "failure" the user could never fix.
+            library.remove(path)
+            trashed.append(path)
+            continue
         last_exc: Exception | None = None
         for attempt in range(_TRASH_RETRIES):
             try:

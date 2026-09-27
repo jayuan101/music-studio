@@ -5,8 +5,8 @@ from __future__ import annotations
 import os
 from pathlib import Path
 
-from PySide6.QtCore import QSize, Qt
-from PySide6.QtGui import QIcon
+from PySide6.QtCore import QByteArray, QSize, Qt, QTimer
+from PySide6.QtGui import QGuiApplication, QIcon
 from PySide6.QtWidgets import (
     QHBoxLayout,
     QLabel,
@@ -101,7 +101,7 @@ class MainWindow(QMainWindow):
         if icon is not None:
             self.setWindowIcon(icon)
         self.resize(1280, 820)
-        self.setMinimumSize(QSize(1000, 680))
+        self._apply_minimum_size()
         self.setAcceptDrops(True)
 
         self._build()
@@ -146,6 +146,14 @@ class MainWindow(QMainWindow):
             QListWidgetItem(f"  {glyph}   {label}", self.sidebar)
         self.sidebar.setCurrentRow(0)
         self.sidebar.currentRowChanged.connect(self._on_page_changed)
+        # Wide enough for the longest label in the actual font: a fixed 190 px
+        # clipped labels and put a horizontal scrollbar under the menu.
+        self.sidebar.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        self.sidebar.ensurePolished()
+        metrics = self.sidebar.fontMetrics()
+        widest = max(metrics.horizontalAdvance(self.sidebar.item(i).text())
+                     for i in range(self.sidebar.count()))
+        sidebar_container.setFixedWidth(max(190, widest + 48))
         sidebar_layout.addWidget(self.sidebar, 1)
 
         version_label = QLabel(f"  v{__version__}")
@@ -244,12 +252,22 @@ class MainWindow(QMainWindow):
         QMediaPlayer has it as its source, paused or not. Runs on the main
         thread, synchronously, before the write job is even submitted.
         """
-        targets = {Path(p).resolve() for p in paths}
-        current = self.now_playing_bar.queue.current
-        if current is not None and Path(current).resolve() in targets:
-            self.now_playing_bar.player.clear()
-        if self.editor_panel.current_path is not None and Path(self.editor_panel.current_path).resolve() in targets:
-            self.editor_panel.player.clear()
+        def key(p) -> str:
+            # Case-insensitive, junction-resolved: C:\Users\...\Music is a
+            # junction to D:\UserData\...\Music here, and Windows paths
+            # compare without case.
+            return os.path.normcase(str(Path(p).resolve()))
+
+        targets = {key(p) for p in paths}
+        # Ask each player what it actually has open -- that is what holds the
+        # lock -- as well as what the queue / editor think is current.
+        for player, believed in (
+            (self.now_playing_bar.player, self.now_playing_bar.queue.current),
+            (self.editor_panel.player, self.editor_panel.current_path),
+        ):
+            candidates = [c for c in (player.loaded_path, believed) if c is not None]
+            if any(key(c) in targets for c in candidates):
+                player.clear()
 
     # -- navigation -----------------------------------------------------
     def _on_page_changed(self, index: int) -> None:
@@ -517,7 +535,54 @@ class MainWindow(QMainWindow):
             self.go_to("Library")
             event.acceptProposedAction()
 
+    def _apply_minimum_size(self) -> None:
+        """1000x680, but never bigger than the screen can show -- at a large
+        interface size a fixed minimum would push the window off-screen."""
+        screen = QGuiApplication.primaryScreen()
+        width, height = 1000, 680
+        if screen is not None:
+            available = screen.availableGeometry()
+            width = min(width, available.width())
+            height = min(height, available.height())
+        self.setMinimumSize(QSize(width, height))
+
+    def show_initial(self) -> None:
+        """Show at last session's size, or maximized the first time, so the
+        app uses the whole screen instead of a fixed 1280x820 box."""
+        saved = self.settings.window_geometry
+        scale = float(os.environ.get("QT_SCALE_FACTOR") or 1.0)
+        same_scale = abs(self.settings.window_geometry_scale - scale) < 0.01
+        restored = bool(saved) and same_scale and self.restoreGeometry(
+            QByteArray.fromBase64(saved.encode("ascii")))
+        if restored:
+            self.show()
+        else:
+            self.showMaximized()
+        state = self.settings.window_state
+        if not (state and same_scale and self.restoreState(
+                QByteArray.fromBase64(state.encode("ascii")))):
+            # After the maximize has actually happened, so width() is final.
+            QTimer.singleShot(0, self._default_dock_width)
+
+    def _default_dock_width(self) -> None:
+        """Give the Jobs panel about a fifth of the window. Left to itself Qt
+        sized it from its longest job title and it took nearly half the
+        window, squeezing every page into the rest."""
+        width = self.width() or self.screen().availableGeometry().width()
+        target = max(300, min(420, int(width * 0.2)))
+        self.resizeDocks([self.jobs_dock], [target], Qt.Horizontal)
+
+    def _save_geometry(self) -> None:
+        try:
+            self.settings.window_geometry = bytes(self.saveGeometry().toBase64()).decode("ascii")
+            self.settings.window_state = bytes(self.saveState().toBase64()).decode("ascii")
+            self.settings.window_geometry_scale = float(os.environ.get("QT_SCALE_FACTOR") or 1.0)
+            self.settings.save()
+        except (OSError, ValueError):
+            pass  # losing the window size must never block closing
+
     def closeEvent(self, event) -> None:
+        self._save_geometry()
         self.jobs.cancel_all()
         self.jobs.wait_for_done(3000)
         clear_preview_cache()

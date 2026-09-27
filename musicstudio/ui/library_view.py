@@ -405,9 +405,9 @@ class LibraryPanel(QWidget):
         # -- action bar -------------------------------------------------
         self.status_label = QLabel("No tracks yet")
         self.status_label.setObjectName("Hint")
-        # The stats line is long; give it room rather than letting the
-        # action buttons crop it mid-word.
-        self.status_label.setMinimumWidth(360)
+        # On its own line above the buttons (see below): sharing their row, the
+        # long stats line and seven buttons cropped each other mid-word.
+        self.status_label.setWordWrap(True)
 
         self.convert_button = QPushButton("Convert…")
         self.convert_button.clicked.connect(
@@ -445,19 +445,22 @@ class LibraryPanel(QWidget):
         self.delete_button.setObjectName("Danger")
         self.delete_button.clicked.connect(self._delete_selected)
 
-        layout.addWidget(
-            row(
-                self.status_label,
-                spacer(),
-                self.convert_button,
-                self.edit_button,
-                self.tags_button,
-                self.artwork_button,
-                self.fix_tags_button,
-                self.ytmusic_button,
-                self.delete_button,
-            )
+        buttons = (
+            self.convert_button,
+            self.edit_button,
+            self.tags_button,
+            self.artwork_button,
+            self.fix_tags_button,
+            self.ytmusic_button,
+            self.delete_button,
         )
+        for button in buttons:
+            # Never narrower than the label: squeezed, they showed "Jpdate
+            # all artwork" and "uTube Music form".
+            button.ensurePolished()
+            button.setMinimumWidth(button.sizeHint().width())
+        layout.addWidget(self.status_label)
+        layout.addWidget(row(spacer(), *buttons))
         self._update_actions()
 
     # -- data -----------------------------------------------------------
@@ -936,6 +939,7 @@ class LibraryPanel(QWidget):
             return
 
         dialog = DuplicatesDialog(self.library, groups, parent=self)
+        dialog.about_to_write.connect(self.about_to_write.emit)
         dialog.exec()
         if dialog.deleted_paths or dialog.moved_paths:
             self.refresh()

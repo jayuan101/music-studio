@@ -99,13 +99,18 @@ def main(argv: list[str] | None = None) -> int:
     crash_log.install()
     crash_log.install_qt_message_handler()
     _disable_ime_attachment()
+    # Before create_app: Qt reads QT_SCALE_FACTOR only when QApplication is built.
+    from .config import get_settings
+    from .ui import scaling
+
+    scaling.apply(get_settings().ui_scale)
     app = create_app(argv)
     _tame_garbage_collector(app)
 
     from .ui.main_window import MainWindow
 
     window = MainWindow()
-    window.show()
+    window.show_initial()
 
     # Files passed on the command line (or via "Open with") get imported.
     arguments = (argv if argv is not None else sys.argv)[1:]

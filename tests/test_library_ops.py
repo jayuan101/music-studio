@@ -28,15 +28,37 @@ def test_send_to_trash_removes_file_and_row(tmp_path):
     assert library.get(track) is None
 
 
-def test_send_to_trash_reports_failures_without_raising(tmp_path):
+def test_send_to_trash_drops_a_track_whose_file_is_already_gone(tmp_path):
+    """A file deleted outside the app left a row that could never be removed:
+    every delete retried the missing file and reported it as a failure."""
     library = Library(tmp_path / "test.db")
-    missing = tmp_path / "does_not_exist.flac"
+    track = make_tone(tmp_path / "gone.flac", duration=1.0)
+    scan_into_library(library, [track])
+    track.unlink()
 
-    result = library_ops.send_to_trash(library, [missing])
+    result = library_ops.send_to_trash(library, [track])
+
+    assert result.trashed == [track]
+    assert not result.failed
+    assert library.get(track) is None
+
+
+def test_send_to_trash_reports_failures_without_raising(tmp_path, monkeypatch):
+    monkeypatch.setattr(library_ops, "_TRASH_RETRY_DELAY_S", 0)
+    library = Library(tmp_path / "test.db")
+    track = make_tone(tmp_path / "locked.flac", duration=1.0)
+    scan_into_library(library, [track])
+
+    def refuse(_path):
+        raise PermissionError(32, "The process cannot access the file")
+
+    monkeypatch.setattr(library_ops, "send2trash", refuse)
+    result = library_ops.send_to_trash(library, [track])
 
     assert result.trashed == []
     assert len(result.failed) == 1
-    assert result.failed[0][0] == missing
+    assert result.failed[0][0] == track
+    assert library.get(track) is not None  # still indexed: the file is still there
 
 
 def test_move_files_relocates_and_reindexes(tmp_path):

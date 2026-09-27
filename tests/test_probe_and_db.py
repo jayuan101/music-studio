@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import sys
+
 import httpx
 import pytest
 
@@ -404,6 +406,30 @@ def test_find_duplicates_ignores_case_and_whitespace_differences(library, music_
 
     assert len(groups) == 1
     assert groups[0].count == 2
+
+
+@pytest.mark.skipif(sys.platform != "win32", reason="junctions are Windows-only")
+def test_find_duplicates_never_counts_one_file_twice_via_a_junction(library, music_folder, tmp_path):
+    """C:\\Users\\...\\Music was a junction to D:\\UserData\\...\\Music and the
+    same file got a row under each spelling. Reporting those as two copies
+    made "delete the extra copy" delete the only copy -- 655 songs at once."""
+    import _winapi
+
+    T.write(music_folder / "a.flac", T.TagSet(title="Same Song", artist="Same Band"))
+    alias = tmp_path / "alias"
+    _winapi.CreateJunction(str(music_folder), str(alias))
+    scan_into_library(library, [music_folder / "a.flac"])
+    # An older build stored paths unresolved, so a row under the junction
+    # spelling sat next to the resolved one. Recreate that row directly.
+    conn = library._connect()
+    with conn:
+        conn.execute(
+            "INSERT INTO tracks (path, filename, title, artist) VALUES (?,?,?,?)",
+            (str(alias / "a.flac"), "a.flac", "Same Song", "Same Band"),
+        )
+    assert len(library.all_tracks()) == 2  # both spellings indexed, as happened
+
+    assert library.find_duplicates() == []
 
 
 def test_find_duplicates_skips_tracks_with_a_blank_artist_or_title(library, music_folder):
