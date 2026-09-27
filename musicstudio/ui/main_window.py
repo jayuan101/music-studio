@@ -17,6 +17,7 @@ from PySide6.QtWidgets import (
     QScrollArea,
     QStackedWidget,
     QStatusBar,
+    QToolButton,
     QVBoxLayout,
     QWidget,
 )
@@ -210,6 +211,14 @@ class MainWindow(QMainWindow):
         status = QStatusBar()
         self.status_message = QLabel("Ready")
         status.addWidget(self.status_message)
+        # The Activity panel can be closed with its X, and its visibility is
+        # now remembered between sessions -- so there has to be a way back.
+        activity_toggle = QToolButton()
+        toggle_action = self.jobs_dock.toggleViewAction()
+        toggle_action.setText("Activity")
+        toggle_action.setToolTip("Show or hide the Activity panel")
+        activity_toggle.setDefaultAction(toggle_action)
+        status.addPermanentWidget(activity_toggle)
         self.setStatusBar(status)
 
         self.jobs.queue_changed.connect(self._update_status)
