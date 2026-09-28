@@ -3,10 +3,12 @@
 from __future__ import annotations
 
 from collections import OrderedDict
+from datetime import datetime
 from pathlib import Path
 
 from PySide6.QtCore import (
     QAbstractTableModel,
+    QEvent,
     QFileSystemWatcher,
     QModelIndex,
     QObject,
@@ -145,12 +147,24 @@ class _LibraryArtworkPreview(ArtworkView):
         )
 
 
+def _format_added(added_at: float) -> str:
+    """When a track entered the library, compact: "9/27/26 1:20 PM"."""
+    if not added_at:
+        return "—"
+    try:
+        stamp = datetime.fromtimestamp(added_at)
+    except (OverflowError, OSError, ValueError):
+        return "—"
+    return (f"{stamp.month}/{stamp.day}/{stamp:%y} "
+            + stamp.strftime("%I:%M %p").lstrip("0"))
+
+
 class TrackTableModel(QAbstractTableModel):
     """Table model over indexed tracks."""
 
     COLUMNS = [
         "#", "Title", "Artist", "Album", "Album Artist", "Year", "Length",
-        "Quality", "Art", "Genre",
+        "Quality", "Art", "Genre", "Date added",
     ]
 
     def __init__(self, parent=None) -> None:
@@ -175,6 +189,7 @@ class TrackTableModel(QAbstractTableModel):
         lambda t: (t.is_lossless, t.bitrate),
         lambda t: t.has_artwork,
         lambda t: (t.genre or "").lower(),
+        lambda t: t.added_at or 0,
     ]
 
     def sort(self, column: int, order: Qt.SortOrder = Qt.AscendingOrder) -> None:
@@ -222,6 +237,7 @@ class TrackTableModel(QAbstractTableModel):
                 track.quality_label,
                 track.artwork_label,
                 track.genre or "—",
+                _format_added(track.added_at),
             ][column]
 
         if role == Qt.ForegroundRole:
@@ -233,6 +249,9 @@ class TrackTableModel(QAbstractTableModel):
                 return QColor(theme.TEXT_FAINT)
             if column in (0, 5):
                 return QColor(theme.TEXT_DIM)
+
+        if role == Qt.ForegroundRole and column == 10:
+            return QColor(theme.TEXT_DIM)
 
         if role == Qt.TextAlignmentRole and column in (0, 5, 6, 8):
             return int(Qt.AlignCenter)
@@ -390,18 +409,24 @@ class LibraryPanel(QWidget):
 
         header = self.table.horizontalHeader()
         header.setSectionResizeMode(0, QHeaderView.Fixed)
-        header.resizeSection(0, 44)
-        # Title takes all the leftover width. Splitting it four ways with
-        # Artist/Album/Album Artist cut titles to "1 Hour ..." while Album
-        # Artist -- mostly "—" -- got just as much room. The others start at
-        # a sensible width and can still be dragged.
+        header.resizeSection(0, 36)
+        # Title stretches; Artist / Album / Album Artist are sized as shares of
+        # whatever width is left after the fixed columns (_fit_text_columns,
+        # re-run on every resize). Fixed starting widths overflowed at 1080p:
+        # a sideways scrollbar, Date added off-screen, Title squeezed.
         header.setSectionResizeMode(1, QHeaderView.Stretch)
-        for column, width in ((2, 170), (3, 170), (4, 130)):
+        for column in (2, 3, 4):
             header.setSectionResizeMode(column, QHeaderView.Interactive)
-            header.resizeSection(column, width)
-        for column, width in ((5, 60), (6, 70), (7, 130), (8, 60), (9, 110)):
+        for column, width in ((5, 50), (6, 60), (7, 110), (8, 50), (9, 100), (10, 118)):
             header.setSectionResizeMode(column, QHeaderView.Fixed)
             header.resizeSection(column, width)
+        self.table.viewport().installEventFilter(self)
+        # Right-click the header to choose columns. At a 1080p screen there
+        # is room for about eight; showing all eleven pushed a sideways
+        # scrollbar under the table and squeezed Title to nothing.
+        header.setContextMenuPolicy(Qt.CustomContextMenu)
+        header.customContextMenuRequested.connect(self._choose_columns)
+        self._apply_hidden_columns()
         layout.addWidget(self.table, 1)
 
         # -- action bar -------------------------------------------------
@@ -473,6 +498,57 @@ class LibraryPanel(QWidget):
             )
         else:
             self.status_label.setText("No tracks yet — add a folder to get started")
+
+    def eventFilter(self, obj, event) -> bool:  # noqa: N802 (Qt API)
+        if obj is self.table.viewport() and event.type() == QEvent.Resize:
+            self._fit_text_columns()
+        return super().eventFilter(obj, event)
+
+    def _fit_text_columns(self) -> None:
+        """Share the width left after the fixed columns: Title 40%, the rest
+        of Artist / Album / Album Artist split what remains. Runs on every
+        resize, so the table never needs a sideways scrollbar."""
+        header = self.table.horizontalHeader()
+        visible = [c for c in range(self.model.columnCount()) if not header.isSectionHidden(c)]
+        text_cols = [c for c in (2, 3, 4) if c in visible]
+        fixed = sum(header.sectionSize(c) for c in visible if c not in (1, 2, 3, 4))
+        leftover = self.table.viewport().width() - fixed
+        if not text_cols or leftover <= 0:
+            return
+        share = int(leftover * 0.6 / len(text_cols))
+        for column in text_cols:
+            header.resizeSection(column, max(60, share))
+
+    def _apply_hidden_columns(self) -> None:
+        hidden = set(get_settings().library_hidden_columns)
+        for column, name in enumerate(self.model.COLUMNS):
+            # Title is the one column that can never be hidden.
+            self.table.setColumnHidden(column, name in hidden and column != 1)
+        self._fit_text_columns()
+
+    def _choose_columns(self, pos) -> None:
+        menu = QMenu(self)
+        menu.addSection("Show columns")
+        settings = get_settings()
+        hidden = set(settings.library_hidden_columns)
+        for column, name in enumerate(self.model.COLUMNS):
+            if column == 1:
+                continue
+            action = menu.addAction(name)
+            action.setCheckable(True)
+            action.setChecked(name not in hidden)
+            action.setData(name)
+        chosen = menu.exec(self.table.horizontalHeader().mapToGlobal(pos))
+        if chosen is None:
+            return
+        name = chosen.data()
+        hidden.symmetric_difference_update({name})
+        settings.library_hidden_columns = [n for n in self.model.COLUMNS if n in hidden]
+        try:
+            settings.save()
+        except OSError:
+            pass
+        self._apply_hidden_columns()
 
     def _apply_search(self, term: str) -> None:
         self.model.set_tracks(self.library.search(term))

@@ -178,6 +178,10 @@ class Settings:
     #: whatever width the user dragged it to.
     window_state: str = ""
     window_geometry_scale: float = 0.0
+    #: Library table columns switched off (right-click the header). By
+    #: default the two least useful ones make room for "Date added".
+    library_hidden_columns: list[str] = field(
+        default_factory=lambda: ["Album Artist", "Art"])
 
     # -- Personal AI ------------------------------------------------------
     #: Local model backend. Ollama runs as a separate process the user
