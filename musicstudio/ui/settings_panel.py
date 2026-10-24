@@ -75,6 +75,7 @@ class SettingsPanel(QWidget):
         layout.addWidget(self._build_quality_card())
         layout.addWidget(self._build_artwork_card())
         layout.addWidget(self._build_editor_card())
+        layout.addWidget(self._build_playback_card())
         layout.addWidget(self._build_download_card())
         layout.addWidget(self._build_autotrim_card())
         layout.addWidget(self._build_ai_card())
@@ -291,6 +292,39 @@ class SettingsPanel(QWidget):
         form_layout.addRow("Normalise to", self.loudnorm_target)
 
         return card(section_label("Editor"), form, self.gain_hint)
+
+    def _build_playback_card(self) -> QWidget:
+        self.replaygain_mode = QComboBox()
+        self.replaygain_mode.addItem("Off — play every song as it is", "off")
+        self.replaygain_mode.addItem("Track — even out every song", "track")
+        self.replaygain_mode.addItem("Album — keep each album's own loud/quiet", "album")
+        self.replaygain_mode.currentIndexChanged.connect(self._save)
+
+        self.replaygain_preamp = QDoubleSpinBox()
+        self.replaygain_preamp.setRange(-15.0, 15.0)
+        self.replaygain_preamp.setSingleStep(1.0)
+        self.replaygain_preamp.setSuffix(" dB")
+        self.replaygain_preamp.setToolTip("Added to every song's ReplayGain adjustment")
+        self.replaygain_preamp.valueChanged.connect(self._save)
+
+        hint = QLabel(
+            "Uses the ReplayGain tags written by “Scan ReplayGain” (right-click "
+            "songs in the Library). Songs without them play unchanged. Most songs "
+            "only need turning down; the player can't go louder than the volume "
+            "slider's 100%, so quiet songs are lifted only as far as the slider "
+            "leaves room. The Editor always plays files as they are."
+        )
+        hint.setObjectName("Hint")
+        hint.setWordWrap(True)
+
+        form = QWidget()
+        form_layout = QFormLayout(form)
+        form_layout.setContentsMargins(0, 0, 0, 0)
+        form_layout.setSpacing(8)
+        form_layout.addRow("ReplayGain", self.replaygain_mode)
+        form_layout.addRow("Pre-amp", self.replaygain_preamp)
+
+        return card(section_label("Playback"), form, hint)
 
     def _build_appearance_card(self) -> QWidget:
         auto_percent = round(scaling.resolve("auto") * 100)
@@ -546,6 +580,10 @@ class SettingsPanel(QWidget):
         self.max_gain.setValue(s.max_gain_db)
         self.loudnorm_target.setValue(s.loudnorm_target_lufs)
 
+        index = self.replaygain_mode.findData(s.replaygain_mode)
+        self.replaygain_mode.setCurrentIndex(max(0, index))
+        self.replaygain_preamp.setValue(s.replaygain_preamp_db)
+
         index = self.download_mode.findData(s.download_mode)
         self.download_mode.setCurrentIndex(max(0, index))
         self.download_thumbnail.setChecked(s.download_embed_thumbnail)
@@ -604,6 +642,9 @@ class SettingsPanel(QWidget):
         s.limiter_ceiling_db = self.limiter_ceiling.value()
         s.max_gain_db = self.max_gain.value()
         s.loudnorm_target_lufs = self.loudnorm_target.value()
+
+        s.replaygain_mode = self.replaygain_mode.currentData() or "track"
+        s.replaygain_preamp_db = self.replaygain_preamp.value()
 
         s.download_mode = self.download_mode.currentData()
         s.download_embed_thumbnail = self.download_thumbnail.isChecked()

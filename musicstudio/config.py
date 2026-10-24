@@ -164,6 +164,12 @@ class Settings:
     #: Target loudness for EBU R128 normalization.
     loudnorm_target_lufs: float = -14.0
 
+    # -- Playback -------------------------------------------------------
+    #: ReplayGain in the library player: "off", "track" or "album".
+    replaygain_mode: str = "track"
+    #: Added to every ReplayGain adjustment, in dB.
+    replaygain_preamp_db: float = 0.0
+
     # -- UI -------------------------------------------------------------
     theme: str = "dark"
     library_paths: list[str] = field(default_factory=list)

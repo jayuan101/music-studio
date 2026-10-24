@@ -331,6 +331,7 @@ class LibraryPanel(QWidget):
     tags_fix_requested = Signal(list)
     ytmusic_format_requested = Signal(list)
     auto_trim_requested = Signal(list)
+    replaygain_requested = Signal(list)
     #: Double-click: play this track, queuing every track currently visible
     #: (respecting the active search/sort) -- paths, then the clicked row's
     #: index within that list.
@@ -906,6 +907,13 @@ class LibraryPanel(QWidget):
         ytmusic_action.triggered.connect(lambda: self.ytmusic_format_requested.emit(paths))
         auto_trim_action = menu.addAction("Auto-trim intro/outro…")
         auto_trim_action.triggered.connect(lambda: self.auto_trim_requested.emit(paths))
+        replaygain_action = menu.addAction("Scan ReplayGain")
+        replaygain_action.setToolTip(
+            "Measure loudness and tag these songs (and the rest of their albums) "
+            "so the player can keep them at an even volume. Tags only -- the "
+            "audio is not changed."
+        )
+        replaygain_action.triggered.connect(lambda: self.replaygain_requested.emit(paths))
 
         menu.addSeparator()
         delete_action = menu.addAction("Delete…")

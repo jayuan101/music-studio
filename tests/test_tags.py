@@ -18,6 +18,7 @@ ROUND_TRIP_FIELDS = [
     "comment", "lyrics", "track_number", "track_total", "disc_number",
     "disc_total", "bpm", "isrc", "publisher", "copyright", "compilation",
     "musicbrainz_albumid", "musicbrainz_trackid", "replaygain_track_gain",
+    "replaygain_track_peak", "replaygain_album_gain", "replaygain_album_peak",
     "source_url",
 ]
 
@@ -33,7 +34,9 @@ def full_tagset(artwork=None) -> T.TagSet:
         isrc="USRC17607839", publisher="Night Records", copyright="(C) 2026",
         encoded_by="Music Studio", compilation=True,
         musicbrainz_albumid="7d3f-abc", musicbrainz_trackid="tr-999",
-        replaygain_track_gain="-6.25 dB", source_url="https://example.com/x",
+        replaygain_track_gain="-6.25 dB", replaygain_track_peak="0.501187",
+        replaygain_album_gain="-5.10 dB", replaygain_album_peak="0.891251",
+        source_url="https://example.com/x",
         artwork=artwork,
     )
 

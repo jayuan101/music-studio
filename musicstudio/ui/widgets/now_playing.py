@@ -18,6 +18,8 @@ from PySide6.QtCore import QObject, Qt, Signal
 from PySide6.QtGui import QPixmap
 from PySide6.QtWidgets import QHBoxLayout, QLabel, QPushButton, QStyle, QVBoxLayout, QWidget
 
+from ...config import get_settings
+from ...core import replaygain
 from .. import theme
 from ..common import safe_pixmap
 from .async_read import AsyncTagReader
@@ -158,8 +160,10 @@ class NowPlayingBar(QWidget):
     #: needing to know the other exists.
     playing_changed = Signal(bool)
 
-    def __init__(self, parent: QWidget | None = None) -> None:
+    def __init__(self, library=None, parent: QWidget | None = None) -> None:
         super().__init__(parent)
+        #: Where ReplayGain values come from; None plays everything unadjusted.
+        self.library = library
         self.queue = PlaybackQueue(self)
         self.player = Player()
         # Track info is read off the GUI thread; see AsyncTagReader. No debounce
@@ -257,6 +261,8 @@ class NowPlayingBar(QWidget):
             return
 
         self.player.load(track)
+        # Before play(), so a loud track never starts loud for a moment.
+        self.apply_replaygain()
         self.player.play()
 
         # Playback starts immediately; the title, artist and cover art follow
@@ -271,6 +277,23 @@ class NowPlayingBar(QWidget):
             self.artist_label.setText("")
             self._clear_art()
         self._update_controls()
+
+    def apply_replaygain(self) -> None:
+        """Set the player's gain for the current track from the library.
+
+        A database lookup, not a file read, so it is safe on the GUI thread.
+        Also called when the ReplayGain preference changes mid-song.
+        """
+        track = self.queue.current
+        gain = 0.0
+        if track is not None and self.library is not None:
+            settings = get_settings()
+            gain = replaygain.playback_gain_db(
+                self.library.get(Path(track)),
+                mode=settings.replaygain_mode,
+                preamp_db=settings.replaygain_preamp_db,
+            )
+        self.player.set_gain_db(gain)
 
     def _apply_track_info(self, path: Path, info) -> None:
         if info is None:

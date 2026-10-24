@@ -27,6 +27,7 @@ from ..config import clear_preview_cache, ensure_dirs, get_settings
 from ..core import artwork as artwork_module
 from ..core import autotrim as autotrim_module
 from ..core import ffmpeg
+from ..core import replaygain
 from ..core import tag_fix as tag_fix_module
 from ..core import ytmusic as ytmusic_module
 from ..core.jobs import JobQueue
@@ -199,7 +200,7 @@ class MainWindow(QMainWindow):
         layout.addWidget(self.stack, 1)
 
         # -- persistent playback bar --------------------------------------
-        self.now_playing_bar = NowPlayingBar()
+        self.now_playing_bar = NowPlayingBar(self.library)
         outer_layout.addWidget(self.now_playing_bar)
 
         self.setCentralWidget(central)
@@ -232,6 +233,7 @@ class MainWindow(QMainWindow):
         self.library_panel.tags_fix_requested.connect(self._fix_library_tags)
         self.library_panel.ytmusic_format_requested.connect(self._format_for_ytmusic)
         self.library_panel.auto_trim_requested.connect(self._auto_trim_selected)
+        self.library_panel.replaygain_requested.connect(self._replaygain_selected)
         self.library_panel.play_requested.connect(self.now_playing_bar.play_queue)
         self.library_panel.selection_changed.connect(self._preload_editor)
         self.download_panel.preview_ready.connect(
@@ -350,6 +352,8 @@ class MainWindow(QMainWindow):
         # A backend/model/toggle change must take effect on the next command,
         # not require reopening the app.
         self.assistant_panel.refresh_settings()
+        # ReplayGain mode/pre-amp: re-level the song that is playing now.
+        self.now_playing_bar.apply_replaygain()
 
     # -- actions --------------------------------------------------------
     def _update_artwork(self, paths: list[Path]) -> None:
@@ -493,6 +497,34 @@ class MainWindow(QMainWindow):
             f"Auto-trim: trimmed {len(applied)} of {len(payload)} track(s)"
         )
         self._reindex([o.path for o in applied])
+
+    def _replaygain_selected(self, paths: list[Path]) -> None:
+        if not paths:
+            self.status_message.setText("Nothing selected to scan")
+            return
+        self._release_file_locks(paths)
+
+        def work(context, targets):
+            return replaygain.scan_library(targets, library=self.library, context=context)
+
+        job = self.jobs.submit_func(
+            f"ReplayGain scan of {len(paths)} track(s)", work, paths, category="replaygain"
+        )
+        job.signals.finished.connect(self._on_replaygain_finished)
+
+    def _on_replaygain_finished(self, _job_id: str, state: str, payload) -> None:
+        self.library_panel.refresh()
+        self.now_playing_bar.apply_replaygain()
+        if state != "succeeded":
+            self.status_message.setText(f"ReplayGain scan failed: {payload}")
+            return
+        parts = [f"tagged {len(payload.updated)}"]
+        if payload.skipped:
+            parts.append(f"{len(payload.skipped)} already done")
+        if payload.failed:
+            parts.append(f"{len(payload.failed)} failed ({payload.failed[0][0].name}: "
+                         f"{payload.failed[0][1]})")
+        self.status_message.setText("ReplayGain: " + ", ".join(parts))
 
     def _reindex(self, paths: list[Path]) -> None:
         """Re-scan files that changed, then refresh the library view."""

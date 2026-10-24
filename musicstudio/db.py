@@ -20,11 +20,12 @@ from .config import DB_PATH
 from .core import convert as convert_module
 from .core import ffmpeg
 from .core import probe
+from .core import replaygain
 from .core import tags as tags_module
 from .core.convert import ConvertRequest, unique_destination
 from .core.formats import FLAC, IMPORTABLE_EXTENSIONS, NORMALIZE_ON_IMPORT_EXTENSIONS
 
-SCHEMA_VERSION = 2
+SCHEMA_VERSION = 3
 
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS tracks (
@@ -98,6 +99,14 @@ _MIGRATIONS: dict[int, tuple[str, ...]] = {
         "ALTER TABLE tracks ADD COLUMN source_url TEXT NOT NULL DEFAULT ''",
         "ALTER TABLE tracks ADD COLUMN auto_trim_state TEXT NOT NULL DEFAULT 'not_applicable'",
         "CREATE INDEX IF NOT EXISTS idx_tracks_autotrim ON tracks(auto_trim_state)",
+    ),
+    # ReplayGain, parsed from the file's tags so the player knows a track's
+    # gain before it starts playing, without reading the file. NULL = none.
+    3: (
+        "ALTER TABLE tracks ADD COLUMN rg_track_gain REAL",
+        "ALTER TABLE tracks ADD COLUMN rg_track_peak REAL",
+        "ALTER TABLE tracks ADD COLUMN rg_album_gain REAL",
+        "ALTER TABLE tracks ADD COLUMN rg_album_peak REAL",
     ),
 }
 
@@ -183,6 +192,10 @@ class TrackRow:
     added_at: float = 0.0
     source_url: str = ""
     auto_trim_state: str = "not_applicable"
+    rg_track_gain: float | None = None
+    rg_track_peak: float | None = None
+    rg_album_gain: float | None = None
+    rg_album_peak: float | None = None
 
     @property
     def display_title(self) -> str:
@@ -466,8 +479,9 @@ class Library:
                     title, artist, album, albumartist, date, genre,
                     track_number, disc_number,
                     codec, duration, sample_rate, bit_depth, channels, bitrate, is_lossless,
-                    has_artwork, artwork_width, source_url
-                ) VALUES (?,?,?,?, ?,?,?,?,?,?, ?,?, ?,?,?,?,?,?,?, ?,?,?)
+                    has_artwork, artwork_width, source_url,
+                    rg_track_gain, rg_track_peak, rg_album_gain, rg_album_peak
+                ) VALUES (?,?,?,?, ?,?,?,?,?,?, ?,?, ?,?,?,?,?,?,?, ?,?,?, ?,?,?,?)
                 ON CONFLICT(path) DO UPDATE SET
                     filename=excluded.filename, size_bytes=excluded.size_bytes,
                     modified_time=excluded.modified_time,
@@ -479,7 +493,9 @@ class Library:
                     channels=excluded.channels, bitrate=excluded.bitrate,
                     is_lossless=excluded.is_lossless,
                     has_artwork=excluded.has_artwork, artwork_width=excluded.artwork_width,
-                    source_url=excluded.source_url
+                    source_url=excluded.source_url,
+                    rg_track_gain=excluded.rg_track_gain, rg_track_peak=excluded.rg_track_peak,
+                    rg_album_gain=excluded.rg_album_gain, rg_album_peak=excluded.rg_album_peak
                 """,
                 (
                     str(path), path.name, size, modified,
@@ -488,6 +504,10 @@ class Library:
                     info.codec, info.duration, info.sample_rate, info.bit_depth,
                     info.channels, info.bitrate, int(info.is_lossless),
                     int(tags.has_artwork()), artwork.width if artwork else 0, tags.source_url,
+                    replaygain.parse_gain(tags.replaygain_track_gain),
+                    replaygain.parse_peak(tags.replaygain_track_peak),
+                    replaygain.parse_gain(tags.replaygain_album_gain),
+                    replaygain.parse_peak(tags.replaygain_album_peak),
                 ),
             )
             return cursor.lastrowid or 0
@@ -556,6 +576,10 @@ class Library:
             added_at=row["added_at"],
             source_url=row["source_url"],
             auto_trim_state=row["auto_trim_state"],
+            rg_track_gain=row["rg_track_gain"],
+            rg_track_peak=row["rg_track_peak"],
+            rg_album_gain=row["rg_album_gain"],
+            rg_album_peak=row["rg_album_peak"],
         )
 
     def all_tracks(self) -> list[TrackRow]:

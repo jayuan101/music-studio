@@ -50,6 +50,9 @@ class Player(QWidget):
         self._audio = QAudioOutput(self)
         self._player.setAudioOutput(self._audio)
         self._audio.setVolume(0.8)
+        #: Linear factor from ReplayGain (set_gain_db), applied on top of the
+        #: volume slider. 1.0 = no adjustment.
+        self._gain_factor = 1.0
 
         #: Stop automatically at this position (seconds) when playing a region.
         self._stop_at: float | None = None
@@ -107,9 +110,7 @@ class Player(QWidget):
         self.volume_slider.setValue(80)
         self.volume_slider.setFixedWidth(90)
         self.volume_slider.setToolTip("Playback volume")
-        self.volume_slider.valueChanged.connect(
-            lambda value: self._audio.setVolume(value / 100.0)
-        )
+        self.volume_slider.valueChanged.connect(self._apply_volume)
 
         self.status_label = QLabel("")
         self.status_label.setObjectName("Hint")
@@ -126,6 +127,19 @@ class Player(QWidget):
         layout.addWidget(self.volume_slider)
 
         self.setEnabled(False)
+
+    # -- volume ---------------------------------------------------------
+    def set_gain_db(self, db: float) -> None:
+        """Turn playback up or down by ``db`` relative to the volume slider.
+
+        The output cannot go past full scale, so a positive gain only helps
+        when the slider is below 100%; anything beyond that is capped.
+        """
+        self._gain_factor = 10 ** (db / 20)
+        self._apply_volume()
+
+    def _apply_volume(self, *_) -> None:
+        self._audio.setVolume(min(1.0, self.volume_slider.value() / 100.0 * self._gain_factor))
 
     # -- loading --------------------------------------------------------
     def load(self, path: str | Path, *, offset: float = 0.0) -> None:

@@ -51,6 +51,7 @@ FIELDS: dict[str, RuleField] = {
         RuleField("bit_depth", "Bit depth", NUMBER, "bit_depth", "bit"),
         RuleField("is_lossless", "Lossless", BOOLEAN, "is_lossless"),
         RuleField("has_artwork", "Has artwork", BOOLEAN, "has_artwork"),
+        RuleField("has_replaygain", "Has ReplayGain", BOOLEAN, "(rg_track_gain IS NOT NULL)"),
         RuleField("added_at", "Date added", TIME, "added_at"),
     )
 }

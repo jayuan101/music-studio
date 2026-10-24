@@ -111,6 +111,8 @@ class TagSet:
     musicbrainz_artistid: str = ""
     replaygain_track_gain: str = ""
     replaygain_album_gain: str = ""
+    replaygain_track_peak: str = ""
+    replaygain_album_peak: str = ""
     #: Where this file came from, when downloaded from a URL.
     source_url: str = ""
     artwork: Artwork | None = field(default=None, repr=False)
@@ -291,6 +293,8 @@ VORBIS_MAP = {
     "musicbrainz_artistid": "MUSICBRAINZ_ARTISTID",
     "replaygain_track_gain": "REPLAYGAIN_TRACK_GAIN",
     "replaygain_album_gain": "REPLAYGAIN_ALBUM_GAIN",
+    "replaygain_track_peak": "REPLAYGAIN_TRACK_PEAK",
+    "replaygain_album_peak": "REPLAYGAIN_ALBUM_PEAK",
     "source_url": "SOURCEURL",
 }
 
@@ -335,6 +339,8 @@ MP4_FREEFORM_MAP = {
     "musicbrainz_artistid": "MusicBrainz Artist Id",
     "replaygain_track_gain": "REPLAYGAIN_TRACK_GAIN",
     "replaygain_album_gain": "REPLAYGAIN_ALBUM_GAIN",
+    "replaygain_track_peak": "REPLAYGAIN_TRACK_PEAK",
+    "replaygain_album_peak": "REPLAYGAIN_ALBUM_PEAK",
     "source_url": "SOURCEURL",
 }
 
@@ -363,8 +369,24 @@ ASF_MAP = {
     "musicbrainz_artistid": "MusicBrainz/Artist Id",
     "replaygain_track_gain": "replaygain_track_gain",
     "replaygain_album_gain": "replaygain_album_gain",
+    "replaygain_track_peak": "replaygain_track_peak",
+    "replaygain_album_peak": "replaygain_album_peak",
     "source_url": "SOURCEURL",
     "compilation": "WM/IsCompilation",
+}
+
+#: TagSet field -> ID3 TXXX description, for the fields ID3 has no frame for.
+#: Matched case-insensitively on read; written with these spellings, which
+#: are what foobar2000 and Picard write.
+ID3_TXXX_MAP = {
+    "musicbrainz_trackid": "MusicBrainz Release Track Id",
+    "musicbrainz_albumid": "MusicBrainz Album Id",
+    "musicbrainz_artistid": "MusicBrainz Artist Id",
+    "replaygain_track_gain": "replaygain_track_gain",
+    "replaygain_album_gain": "replaygain_album_gain",
+    "replaygain_track_peak": "replaygain_track_peak",
+    "replaygain_album_peak": "replaygain_album_peak",
+    "source_url": "SOURCEURL",
 }
 
 #: Fields stored as integers rather than text.
@@ -585,8 +607,11 @@ def _read_id3(audio) -> TagSet:
     )
     tags.musicbrainz_albumid = txxx.get("musicbrainz album id", "")
     tags.musicbrainz_artistid = txxx.get("musicbrainz artist id", "")
-    tags.replaygain_track_gain = txxx.get("replaygain_track_gain", "")
-    tags.replaygain_album_gain = txxx.get("replaygain_album_gain", "")
+    for field_name in (
+        "replaygain_track_gain", "replaygain_album_gain",
+        "replaygain_track_peak", "replaygain_album_peak",
+    ):
+        setattr(tags, field_name, txxx.get(field_name, ""))
     tags.source_url = txxx.get("sourceurl", "")
     if not tags.isrc:
         tags.isrc = txxx.get("isrc", "")
@@ -850,10 +875,14 @@ def write_with_retry(
     let go of the file) into a successful save instead of a failure the
     user has to notice and retry by hand.
     """
+    _retry_on_lock(lambda: write(path, tags, artwork=artwork), attempts, delay_s)
+
+
+def _retry_on_lock(call, attempts: int, delay_s: float) -> None:
     last_exc: TagError | None = None
     for attempt in range(attempts):
         try:
-            write(path, tags, artwork=artwork)
+            call()
             return
         except TagError as exc:
             if not _caused_by_permission_error(exc):
@@ -863,6 +892,82 @@ def write_with_retry(
                 time.sleep(delay_s)
     assert last_exc is not None
     raise last_exc
+
+
+def write_fields(
+    path: str | Path,
+    *,
+    attempts: int = _WRITE_RETRIES,
+    delay_s: float = _WRITE_RETRY_DELAY_S,
+    **fields: str,
+) -> None:
+    """Set (or, given "", remove) only the named free-text fields.
+
+    For tools like the ReplayGain scan that add a few fields to files they
+    did not otherwise edit. A full :func:`write` re-saves every field and
+    normalises the file on the way (ID3 to v2.3, an MP4 compilation flag,
+    FLAC pictures), which is right for the Tags page but too much to do to a
+    whole library as a side effect. Only fields with a free-text key in
+    every container are accepted -- see ``ID3_TXXX_MAP``.
+    """
+    unknown = set(fields) - set(ID3_TXXX_MAP)
+    if unknown:
+        raise ValueError(f"write_fields() cannot write {', '.join(sorted(unknown))}")
+    _retry_on_lock(lambda: _write_fields_once(Path(path), fields), attempts, delay_s)
+
+
+def _write_fields_once(path: Path, fields: dict[str, str]) -> None:
+    if not path.is_file():
+        raise FileNotFoundError(f"No such file: {path}")
+    try:
+        audio = mutagen.File(str(path))
+        if audio is None:
+            raise TagError(f"{path.name} is not a recognised audio file")
+        if audio.tags is None:
+            audio.add_tags()
+        container = audio.tags
+
+        if isinstance(audio, (FLAC, OggVorbis, OggOpus, OggFLAC)):
+            for name, value in fields.items():
+                key = VORBIS_MAP[name]
+                _discard(container, key, key.lower())
+                if value:
+                    container[key] = [value]
+        elif isinstance(audio, MP4):
+            from mutagen.mp4 import MP4FreeForm
+
+            for name, value in fields.items():
+                key = f"----:com.apple.iTunes:{MP4_FREEFORM_MAP[name]}"
+                _discard(container, key)
+                if value:
+                    container[key] = [MP4FreeForm(value.encode("utf-8"))]
+        elif isinstance(audio, ASF):
+            for name, value in fields.items():
+                _discard(container, ASF_MAP[name])
+                if value:
+                    container[ASF_MAP[name]] = [ASFUnicodeAttribute(value)]
+        elif isinstance(audio, (MP3, AIFF, WAVE)):
+            for name, value in fields.items():
+                _set_txxx(container, ID3_TXXX_MAP[name], value)
+            # Keep whichever ID3 version the file already had.
+            version = container.version[1] if container.version[1] in (3, 4) else 3
+            container.save(str(path), v2_version=version)
+            return
+        elif isinstance(audio, (WavPack, APEv2File)):
+            for name, value in fields.items():
+                ape_key = VORBIS_MAP[name].replace("_", " ").title()
+                for existing in [k for k in list(container.keys())
+                                 if _ape_key(k) == _ape_key(ape_key)]:
+                    del container[existing]
+                if value:
+                    container[ape_key] = value
+        else:
+            raise TagError(f"{path.name}: this format has no place for these tags")
+        audio.save()
+    except TagError:
+        raise
+    except Exception as exc:
+        raise TagError(f"Could not write tags to {path.name}: {exc}") from exc
 
 
 def _field_text(tags: TagSet, field_name: str) -> str:
@@ -916,7 +1021,7 @@ def _flac_picture(artwork: Artwork) -> Picture:
 
 
 def _write_id3(audio, path: Path, tags: TagSet, artwork: Artwork | None) -> None:
-    from mutagen.id3 import COMM, TXXX, USLT
+    from mutagen.id3 import COMM, USLT
 
     if audio.tags is None:
         try:
@@ -958,19 +1063,8 @@ def _write_id3(audio, path: Path, tags: TagSet, artwork: Artwork | None) -> None
     if tags.lyrics:
         id3.add(USLT(encoding=3, lang="eng", desc="", text=tags.lyrics))
 
-    for desc, value in (
-        ("MusicBrainz Release Track Id", tags.musicbrainz_trackid),
-        ("MusicBrainz Album Id", tags.musicbrainz_albumid),
-        ("MusicBrainz Artist Id", tags.musicbrainz_artistid),
-        ("replaygain_track_gain", tags.replaygain_track_gain),
-        ("replaygain_album_gain", tags.replaygain_album_gain),
-        ("SOURCEURL", tags.source_url),
-    ):
-        for frame in list(id3.getall("TXXX")):
-            if str(frame.desc).lower() == desc.lower():
-                id3.delall(f"TXXX:{frame.desc}")
-        if value:
-            id3.add(TXXX(encoding=3, desc=desc, text=[value]))
+    for field_name, desc in ID3_TXXX_MAP.items():
+        _set_txxx(id3, desc, getattr(tags, field_name))
 
     if artwork is not None:
         id3.delall("APIC")
@@ -989,6 +1083,17 @@ def _write_id3(audio, path: Path, tags: TagSet, artwork: Artwork | None) -> None
     # v2.4-only tags show up blank there.
     id3.update_to_v23()
     id3.save(str(path), v2_version=3)
+
+
+def _set_txxx(id3, desc: str, value: str) -> None:
+    """Replace a TXXX frame, matching its description case-insensitively."""
+    from mutagen.id3 import TXXX
+
+    for frame in list(id3.getall("TXXX")):
+        if str(frame.desc).lower() == desc.lower():
+            id3.delall(f"TXXX:{frame.desc}")
+    if value:
+        id3.add(TXXX(encoding=3, desc=desc, text=[value]))
 
 
 def _write_mp4(audio, tags: TagSet, artwork: Artwork | None) -> None:

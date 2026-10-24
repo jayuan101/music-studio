@@ -10,6 +10,10 @@ out in whatever format you need — at the best quality the source allows.
   playlist that fills itself from rules like "genre contains jazz" or
   "added in the last 30 days". Export any playlist as `.m3u8` for other
   players, phones or car stereos.
+- **ReplayGain** — right-click songs and choose *Scan ReplayGain* to measure
+  their loudness (EBU R128) and tag them. The player then evens out the
+  volume from song to song, per track or per album (Preferences → Playback).
+  Only tags are written; the audio is never touched.
 - **Search** YouTube directly from the Download page, and play a result the
   moment it downloads, to decide whether you actually want it.
 - **Import** anything ffmpeg can decode (which is essentially everything).
