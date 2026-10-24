@@ -16,6 +16,13 @@ out in whatever format you need — at the best quality the source allows.
   Only tags are written; the audio is never touched.
 - **Queue** — right-click songs for *Play next* or *Add to queue*; they
   slot in without interrupting what is playing, with shuffle on or off.
+- **Library health** — a list on the Library page that counts what needs
+  fixing (missing artwork, album or year, no ReplayGain, lossy files) and
+  opens each as a work queue for the bulk buttons below it. *Check lossless*
+  also flags "lossless" files whose spectrum stops dead at 16–19 kHz, the
+  mark of an MP3/AAC source: lossless in name only. It is a guess from the
+  audio, not proof, and it never reports a cutoff near 20 kHz, which is
+  normal for CD masters.
 - **Search** YouTube directly from the Download page, and play a result the
   moment it downloads, to decide whether you actually want it.
 - **Import** anything ffmpeg can decode (which is essentially everything).

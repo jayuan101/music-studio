@@ -19,6 +19,10 @@ platformdirs>=4.0              # per-OS config/cache/data locations
 # during auto-trim. No network calls, no GPU. Pulls in numpy as a dependency --
 # see the MusicStudio.spec excludes list, which must NOT exclude numpy.
 onnxruntime>=1.17
+# Spectrum analysis for core/authenticity.py ("is this lossless file really
+# lossless?"). Already installed as onnxruntime's dependency, but named here
+# because the app now imports it directly.
+numpy>=1.26
 
 # Personal AI assistant. Ollama itself is NOT a dependency -- it is a
 # separate service the user installs and runs themselves, reached over HTTP.

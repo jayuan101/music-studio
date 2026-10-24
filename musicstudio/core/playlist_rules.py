@@ -52,6 +52,11 @@ FIELDS: dict[str, RuleField] = {
         RuleField("is_lossless", "Lossless", BOOLEAN, "is_lossless"),
         RuleField("has_artwork", "Has artwork", BOOLEAN, "has_artwork"),
         RuleField("has_replaygain", "Has ReplayGain", BOOLEAN, "(rg_track_gain IS NOT NULL)"),
+        RuleField("has_album", "Has album", BOOLEAN, "(album <> '')"),
+        RuleField("has_year", "Has year", BOOLEAN, "(date <> '')"),
+        RuleField("suspect_lossless", "Looks transcoded", BOOLEAN, "(authenticity = 'suspect')"),
+        RuleField("lossless_unchecked", "Lossless, not checked yet", BOOLEAN,
+                  "(is_lossless = 1 AND authenticity IS NULL)"),
         RuleField("added_at", "Date added", TIME, "added_at"),
     )
 }

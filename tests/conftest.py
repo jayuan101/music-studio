@@ -50,6 +50,44 @@ def make_tone(
     return path
 
 
+def make_noise(
+    path: Path,
+    *,
+    duration: float = 12.0,
+    sample_rate: int = 44100,
+    codec: str = "flac",
+    extra: list[str] | None = None,
+) -> Path:
+    """Render full-bandwidth white noise -- a signal with energy up to the
+    Nyquist limit, so any cutoff in the result came from an encoder."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    command = [
+        str(ffmpeg.ffmpeg_path()),
+        "-hide_banner", "-loglevel", "error", "-y",
+        "-f", "lavfi",
+        "-i", f"anoisesrc=d={duration}:c=white:r={sample_rate}:a=0.3:seed=7",
+        "-af", "aformat=channel_layouts=stereo",
+        "-c:a", codec,
+        *(extra or []),
+        str(path),
+    ]
+    subprocess.run(command, check=True, capture_output=True)
+    return path
+
+
+def transcode_through_mp3(source: Path, destination: Path, bitrate: str = "128k") -> Path:
+    """FLAC -> MP3 -> FLAC: lossless in container only, the way a converted
+    or ripped-from-streaming "lossless" file is."""
+    mp3 = destination.with_suffix(".mp3")
+    base = [str(ffmpeg.ffmpeg_path()), "-hide_banner", "-loglevel", "error", "-y"]
+    subprocess.run([*base, "-i", str(source), "-c:a", "libmp3lame", "-b:a", bitrate, str(mp3)],
+                   check=True, capture_output=True)
+    subprocess.run([*base, "-i", str(mp3), "-c:a", "flac", str(destination)],
+                   check=True, capture_output=True)
+    mp3.unlink()
+    return destination
+
+
 def make_png(width: int = 240, height: int = 240) -> bytes:
     """A valid PNG carrying a gradient, so artwork tests need no image library.
 

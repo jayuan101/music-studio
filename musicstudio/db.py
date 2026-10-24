@@ -19,13 +19,14 @@ from pathlib import Path
 from .config import DB_PATH
 from .core import convert as convert_module
 from .core import ffmpeg
+from .core import health_presets
 from .core import probe
 from .core import replaygain
 from .core import tags as tags_module
 from .core.convert import ConvertRequest, unique_destination
 from .core.formats import FLAC, IMPORTABLE_EXTENSIONS, NORMALIZE_ON_IMPORT_EXTENSIONS
 
-SCHEMA_VERSION = 3
+SCHEMA_VERSION = 4
 
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS tracks (
@@ -107,6 +108,12 @@ _MIGRATIONS: dict[int, tuple[str, ...]] = {
         "ALTER TABLE tracks ADD COLUMN rg_track_peak REAL",
         "ALTER TABLE tracks ADD COLUMN rg_album_gain REAL",
         "ALTER TABLE tracks ADD COLUMN rg_album_peak REAL",
+    ),
+    # core/authenticity.py's verdict on lossless files: NULL = not checked yet,
+    # else 'ok' / 'suspect' / 'inconclusive'. See Library.set_authenticity.
+    4: (
+        "ALTER TABLE tracks ADD COLUMN authenticity TEXT",
+        "ALTER TABLE tracks ADD COLUMN authenticity_cutoff_hz INTEGER",
     ),
 }
 
@@ -196,6 +203,8 @@ class TrackRow:
     rg_track_peak: float | None = None
     rg_album_gain: float | None = None
     rg_album_peak: float | None = None
+    authenticity: str | None = None
+    authenticity_cutoff_hz: int | None = None
 
     @property
     def display_title(self) -> str:
@@ -495,7 +504,20 @@ class Library:
                     has_artwork=excluded.has_artwork, artwork_width=excluded.artwork_width,
                     source_url=excluded.source_url,
                     rg_track_gain=excluded.rg_track_gain, rg_track_peak=excluded.rg_track_peak,
-                    rg_album_gain=excluded.rg_album_gain, rg_album_peak=excluded.rg_album_peak
+                    rg_album_gain=excluded.rg_album_gain, rg_album_peak=excluded.rg_album_peak,
+                    -- A verdict describes the audio, so it survives tag edits and
+                    -- ReplayGain scans (which change the file's mtime) but not a
+                    -- conversion or trim, which change the codec or length.
+                    authenticity=CASE WHEN tracks.codec IS NOT excluded.codec
+                        OR tracks.sample_rate IS NOT excluded.sample_rate
+                        OR tracks.bit_depth IS NOT excluded.bit_depth
+                        OR abs(tracks.duration - excluded.duration) > 0.5
+                        THEN NULL ELSE tracks.authenticity END,
+                    authenticity_cutoff_hz=CASE WHEN tracks.codec IS NOT excluded.codec
+                        OR tracks.sample_rate IS NOT excluded.sample_rate
+                        OR tracks.bit_depth IS NOT excluded.bit_depth
+                        OR abs(tracks.duration - excluded.duration) > 0.5
+                        THEN NULL ELSE tracks.authenticity_cutoff_hz END
                 """,
                 (
                     str(path), path.name, size, modified,
@@ -523,6 +545,20 @@ class Library:
             conn.execute(
                 "UPDATE tracks SET auto_trim_state = ? WHERE path = ?",
                 (state, str(Path(path).resolve())),
+            )
+
+    def set_authenticity(self, path: Path, state: str | None, cutoff_hz: int | None = None) -> None:
+        """Store the lossless-authenticity verdict for one track.
+
+        Outside upsert()'s update list for the same reason as auto-trim's
+        state: a rescan must not forget it (upsert clears it only when the
+        audio itself changed).
+        """
+        conn = self._connect()
+        with conn:
+            conn.execute(
+                "UPDATE tracks SET authenticity = ?, authenticity_cutoff_hz = ? WHERE path = ?",
+                (state, cutoff_hz, str(Path(path).resolve())),
             )
 
     def remove(self, path: Path) -> bool:
@@ -580,6 +616,8 @@ class Library:
             rg_track_peak=row["rg_track_peak"],
             rg_album_gain=row["rg_album_gain"],
             rg_album_peak=row["rg_album_peak"],
+            authenticity=row["authenticity"],
+            authenticity_cutoff_hz=row["authenticity_cutoff_hz"],
         )
 
     def all_tracks(self) -> list[TrackRow]:
@@ -763,8 +801,18 @@ class Library:
             for r in rows
         ]
 
+    def health_presets(self) -> list[Playlist]:
+        """The built-in "Library health" lists. Not stored: they have negative
+        ids and are rebuilt from core/health_presets.py, so they can be
+        neither edited nor deleted."""
+        return [
+            Playlist(id=pid, name=name, kind="smart", rules=rules)
+            for pid, name, rules in health_presets.PRESETS
+        ]
+
     def get_playlist(self, playlist_id: int) -> Playlist | None:
-        return next((p for p in self.playlists() if p.id == playlist_id), None)
+        pool = self.health_presets() if playlist_id < 0 else self.playlists()
+        return next((p for p in pool if p.id == playlist_id), None)
 
     def create_playlist(self, name: str, kind: str = "manual", rules: dict | None = None) -> int:
         if kind == "smart":
@@ -810,6 +858,16 @@ class Library:
         sql, params = compile_rules(rules)
         rows = self._connect().execute(f"SELECT * FROM tracks {sql}", params).fetchall()
         return [self._row_to_track(r) for r in rows]
+
+    def count_rules(self, rules: dict) -> int:
+        """How many tracks a smart-playlist rule set matches right now."""
+        from .core.playlist_rules import compile_rules
+
+        sql, params = compile_rules(rules)
+        row = self._connect().execute(
+            f"SELECT COUNT(*) FROM (SELECT 1 FROM tracks {sql})", params
+        ).fetchone()
+        return row[0]
 
     def playlist_tracks(self, playlist_id: int) -> list[TrackRow]:
         playlist = self.get_playlist(playlist_id)

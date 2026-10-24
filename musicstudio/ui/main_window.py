@@ -25,6 +25,7 @@ from PySide6.QtWidgets import (
 from .. import APP_NAME, __version__
 from ..config import clear_preview_cache, ensure_dirs, get_settings
 from ..core import artwork as artwork_module
+from ..core import authenticity as authenticity_module
 from ..core import autotrim as autotrim_module
 from ..core import ffmpeg
 from ..core import replaygain
@@ -234,6 +235,7 @@ class MainWindow(QMainWindow):
         self.library_panel.ytmusic_format_requested.connect(self._format_for_ytmusic)
         self.library_panel.auto_trim_requested.connect(self._auto_trim_selected)
         self.library_panel.replaygain_requested.connect(self._replaygain_selected)
+        self.library_panel.authenticity_requested.connect(self._check_authenticity)
         self.library_panel.play_requested.connect(self.now_playing_bar.play_queue)
         self.library_panel.queue_next_requested.connect(self._queue_next)
         self.library_panel.queue_append_requested.connect(self._queue_append)
@@ -499,6 +501,34 @@ class MainWindow(QMainWindow):
             f"Auto-trim: trimmed {len(applied)} of {len(payload)} track(s)"
         )
         self._reindex([o.path for o in applied])
+
+    def _check_authenticity(self, paths: list[Path]) -> None:
+        if not paths:
+            self.status_message.setText("Nothing selected to check")
+            return
+
+        def work(context, targets):
+            # Read-only: no file locks to release, nothing to re-index.
+            return authenticity_module.check_library(
+                targets, library=self.library, context=context, skip_existing=False
+            )
+
+        job = self.jobs.submit_func(
+            f"Checking {len(paths)} track(s) for transcoding", work, paths, category="authenticity"
+        )
+        job.signals.finished.connect(self._on_authenticity_finished)
+
+    def _on_authenticity_finished(self, _job_id: str, state: str, payload) -> None:
+        self.library_panel.refresh()
+        if state != "succeeded":
+            self.status_message.setText(f"Lossless check failed: {payload}")
+            return
+        text = f"Checked {len(payload.checked)}: {payload.suspect} look transcoded"
+        if payload.skipped:
+            text += f", {len(payload.skipped)} skipped (not lossless or low sample rate)"
+        if payload.failed:
+            text += f", {len(payload.failed)} failed"
+        self.status_message.setText(text)
 
     def _queue_next(self, paths: list[Path]) -> None:
         self.now_playing_bar.queue_next(paths)

@@ -281,6 +281,15 @@ class TrackTableModel(QAbstractTableModel):
             # Hover shows the full text of anything the column cuts off.
             return self.data(index, Qt.DisplayRole)
 
+        if role == Qt.ToolTipRole and column == 7 and track.authenticity == "suspect":
+            where = (f" near {track.authenticity_cutoff_hz / 1000:g} kHz"
+                     if track.authenticity_cutoff_hz else "")
+            return (
+                f"Looks transcoded from a lossy source: the spectrum drops off{where}, "
+                "the way an MP3/AAC encoder leaves it. This is a guess from the audio, "
+                "not proof."
+            )
+
         if role == Qt.DisplayRole:
             return [
                 str(track.track_number or ""),
@@ -290,7 +299,7 @@ class TrackTableModel(QAbstractTableModel):
                 track.albumartist or "—",
                 (track.date or "")[:4],
                 track.duration_label,
-                track.quality_label,
+                track.quality_label + (" ⚠" if track.authenticity == "suspect" else ""),
                 track.artwork_label,
                 track.genre or "—",
                 _format_added(track.added_at),
@@ -300,6 +309,8 @@ class TrackTableModel(QAbstractTableModel):
             # Lossless files are the ones worth keeping; make them findable
             # at a glance rather than by reading the codec column.
             if column == 7:
+                if track.authenticity == "suspect":
+                    return QColor(theme.WARNING)
                 return QColor(theme.LOSSLESS if track.is_lossless else theme.LOSSY)
             if column == 8 and not track.has_artwork:
                 return QColor(theme.TEXT_FAINT)
@@ -332,6 +343,7 @@ class LibraryPanel(QWidget):
     ytmusic_format_requested = Signal(list)
     auto_trim_requested = Signal(list)
     replaygain_requested = Signal(list)
+    authenticity_requested = Signal(list)
     #: Double-click: play this track, queuing every track currently visible
     #: (respecting the active search/sort) -- paths, then the clicked row's
     #: index within that list.
@@ -459,11 +471,20 @@ class LibraryPanel(QWidget):
         )
         self.auto_trim_all_button.clicked.connect(self._auto_trim_all)
 
+        self.check_lossless_button = QPushButton("Check lossless…")
+        self.check_lossless_button.setToolTip(
+            "Look at the spectrum of every lossless song not checked yet and flag the "
+            "ones that look transcoded from MP3/AAC -- lossless in name only. Takes a "
+            "second or two per song; progress is in the Activity panel."
+        )
+        self.check_lossless_button.clicked.connect(self._check_all_lossless)
+
         # Search gets its own full-width line; sharing a row with six buttons
         # it was squeezed down to "Se...". The buttons wrap as width allows.
         layout.addWidget(self.search_box)
         layout.addWidget(flow(add_files, add_folder, rescan, remove_missing,
-                              find_duplicates, self.auto_trim_all_button))
+                              find_duplicates, self.auto_trim_all_button,
+                              self.check_lossless_button))
 
         # -- table ------------------------------------------------------
         self.model = TrackTableModel(self)
@@ -569,10 +590,13 @@ class LibraryPanel(QWidget):
     # -- data -----------------------------------------------------------
     def refresh(self) -> None:
         self._apply_search(self.search_box.text() if hasattr(self, "search_box") else "")
+        self._update_health_counts()
         if self._playlist is not None:
             tracks = self.library.playlist_tracks(self._playlist.id)
             total = sum(t.duration for t in tracks)
             kind = "Smart playlist" if self._playlist.is_smart else "Playlist"
+            if self._playlist.id < 0:
+                kind = "Library health"
             text = f"{kind} · {len(tracks)} songs · {format_duration(total)}"
             if self._playlist.is_smart:
                 text += f" · {playlist_rules.describe_rules(self._playlist.rules or {})}"
@@ -921,6 +945,12 @@ class LibraryPanel(QWidget):
             "audio is not changed."
         )
         replaygain_action.triggered.connect(lambda: self.replaygain_requested.emit(paths))
+        authenticity_action = menu.addAction("Check if truly lossless")
+        authenticity_action.setToolTip(
+            "Flags lossless files that look transcoded from MP3/AAC. A guess from "
+            "the spectrum, not proof."
+        )
+        authenticity_action.triggered.connect(lambda: self.authenticity_requested.emit(paths))
 
         menu.addSeparator()
         delete_action = menu.addAction("Delete…")
@@ -982,10 +1012,36 @@ class LibraryPanel(QWidget):
                 self.sources.addItem(item)
                 if playlist.id == select_id:
                     selected = item
+
+        header = QListWidgetItem("LIBRARY HEALTH")
+        header.setFlags(Qt.NoItemFlags)
+        header.setForeground(QColor(theme.TEXT_FAINT))
+        self.sources.addItem(header)
+        for preset in self.library.health_presets():
+            item = QListWidgetItem(self._health_label(preset))
+            item.setData(Qt.UserRole, preset)
+            item.setToolTip(playlist_rules.describe_rules(preset.rules or {}))
+            self.sources.addItem(item)
+            if preset.id == select_id:
+                selected = item
+
         selected.setSelected(True)
         self.sources.setCurrentItem(selected)
         self.sources.blockSignals(False)
         self._set_playlist(selected.data(Qt.UserRole))
+
+    def _health_label(self, preset: Playlist) -> str:
+        return f"{preset.name}  ({self.library.count_rules(preset.rules or {})})"
+
+    def _update_health_counts(self) -> None:
+        """Keep the Library health counts current as the library changes."""
+        if not hasattr(self, "sources"):
+            return
+        for row in range(self.sources.count()):
+            item = self.sources.item(row)
+            playlist = item.data(Qt.UserRole)
+            if isinstance(playlist, Playlist) and playlist.id < 0:
+                item.setText(self._health_label(playlist))
 
     def _on_source_changed(self) -> None:
         items = self.sources.selectedItems()
@@ -1025,7 +1081,14 @@ class LibraryPanel(QWidget):
         item = self.sources.itemAt(position)
         playlist = item.data(Qt.UserRole) if item is not None else None
         menu = QMenu(self)
-        if isinstance(playlist, Playlist):
+        if isinstance(playlist, Playlist) and playlist.id < 0:
+            # Built-in health lists: fixed rules, so no rename or delete --
+            # but they can be copied into a list of your own to tweak.
+            menu.addAction("Play").triggered.connect(lambda: self._play_source_item(item))
+            menu.addAction("Save as smart playlist…").triggered.connect(
+                lambda: self._copy_preset(playlist)
+            )
+        elif isinstance(playlist, Playlist):
             menu.addAction("Play").triggered.connect(lambda: self._play_source_item(item))
             menu.addSeparator()
             menu.addAction("Rename…").triggered.connect(lambda: self._rename_playlist(playlist))
@@ -1058,6 +1121,19 @@ class LibraryPanel(QWidget):
         else:
             self._reload_sources(select_id=playlist_id)
             self.refresh()
+
+    def _copy_preset(self, preset: Playlist) -> None:
+        playlist_id = self.library.create_playlist(preset.name, "smart", preset.rules)
+        self._reload_sources(select_id=playlist_id)
+        self.refresh()
+
+    def _check_all_lossless(self) -> None:
+        paths = [t.path for t in self.library.all_tracks()
+                 if t.is_lossless and t.authenticity is None]
+        if not paths:
+            self.status_label.setText("Every lossless song has already been checked")
+            return
+        self.authenticity_requested.emit(paths)
 
     def _new_smart_playlist(self) -> None:
         dialog = SmartPlaylistDialog(self.library, parent=self)
