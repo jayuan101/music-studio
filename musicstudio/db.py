@@ -8,9 +8,11 @@ changed on disk is re-read rather than trusted.
 
 from __future__ import annotations
 
+import json
 import os
 import sqlite3
 import threading
+import time
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -65,6 +67,27 @@ CREATE TABLE IF NOT EXISTS ignored_duplicate_groups (
     ignored_at REAL NOT NULL DEFAULT (strftime('%s','now')),
     PRIMARY KEY (artist_key, title_key)
 );
+
+CREATE TABLE IF NOT EXISTS playlists (
+    id         INTEGER PRIMARY KEY,
+    name       TEXT NOT NULL,
+    kind       TEXT NOT NULL CHECK (kind IN ('manual', 'smart')),
+    -- JSON rule set for smart playlists (see core/playlist_rules.py).
+    rules      TEXT NOT NULL DEFAULT '',
+    created_at REAL NOT NULL DEFAULT (strftime('%s','now')),
+    updated_at REAL NOT NULL DEFAULT (strftime('%s','now'))
+);
+
+-- Keyed by track id, not path, so a rescan (which keeps the id) never
+-- breaks a playlist, and removing a track from the library removes it
+-- from every playlist instead of leaving a dangling entry.
+CREATE TABLE IF NOT EXISTS playlist_items (
+    playlist_id INTEGER NOT NULL REFERENCES playlists(id) ON DELETE CASCADE,
+    track_id    INTEGER NOT NULL REFERENCES tracks(id) ON DELETE CASCADE,
+    position    INTEGER NOT NULL,
+    PRIMARY KEY (playlist_id, position)
+);
+CREATE INDEX IF NOT EXISTS idx_playlist_items_track ON playlist_items(track_id);
 """
 
 #: Statements to run when upgrading from schema version (key - 1) to key.
@@ -111,18 +134,24 @@ def _canonicalize_paths(conn: sqlite3.Connection) -> int:
     """
     changed = 0
     rows = conn.execute("SELECT id, path FROM tracks").fetchall()
-    existing = {r["path"] for r in rows}
+    existing = {r["path"]: r["id"] for r in rows}
     for row in rows:
         stored = row["path"]
         resolved = str(Path(stored).resolve())
         if resolved == stored:
             continue
         if resolved in existing:
+            # Point playlist entries at the row being kept first, or the
+            # delete would cascade them away.
+            conn.execute(
+                "UPDATE playlist_items SET track_id = ? WHERE track_id = ?",
+                (existing[resolved], row["id"]),
+            )
             conn.execute("DELETE FROM tracks WHERE id = ?", (row["id"],))
         else:
             conn.execute("UPDATE tracks SET path = ? WHERE id = ?", (resolved, row["id"]))
-            existing.add(resolved)
-        existing.discard(stored)
+            existing[resolved] = row["id"]
+        existing.pop(stored, None)
         changed += 1
     return changed
 
@@ -371,6 +400,20 @@ class DuplicateGroup:
         return sum(t.size_bytes for t in self.redundant_tracks)
 
 
+@dataclass
+class Playlist:
+    """A saved playlist. ``rules`` is set (and items ignored) when smart."""
+
+    id: int
+    name: str
+    kind: str
+    rules: dict | None = None
+
+    @property
+    def is_smart(self) -> bool:
+        return self.kind == "smart"
+
+
 class Library:
     """Thread-safe SQLite wrapper for the track index."""
 
@@ -393,6 +436,8 @@ class Library:
             # WAL lets the UI read while a background scan writes.
             conn.execute("PRAGMA journal_mode=WAL")
             conn.execute("PRAGMA synchronous=NORMAL")
+            # Off by default in SQLite; playlist_items relies on its cascades.
+            conn.execute("PRAGMA foreign_keys=ON")
             self._local.conn = conn
         return conn
 
@@ -677,6 +722,152 @@ class Library:
                 source_url=row.source_url, title=row.title, filename=row.path.name
             )
         ]
+
+    # -- playlists ------------------------------------------------------
+    def playlists(self) -> list[Playlist]:
+        """Every playlist: manual ones first, each group by name."""
+        rows = self._connect().execute(
+            "SELECT * FROM playlists ORDER BY kind, name COLLATE NOCASE"
+        ).fetchall()
+        return [
+            Playlist(
+                id=r["id"],
+                name=r["name"],
+                kind=r["kind"],
+                rules=json.loads(r["rules"]) if r["rules"] else None,
+            )
+            for r in rows
+        ]
+
+    def get_playlist(self, playlist_id: int) -> Playlist | None:
+        return next((p for p in self.playlists() if p.id == playlist_id), None)
+
+    def create_playlist(self, name: str, kind: str = "manual", rules: dict | None = None) -> int:
+        if kind == "smart":
+            from .core.playlist_rules import compile_rules
+
+            compile_rules(rules or {})  # reject a bad rule set before saving it
+        conn = self._connect()
+        with conn:
+            cursor = conn.execute(
+                "INSERT INTO playlists(name, kind, rules) VALUES (?, ?, ?)",
+                (name.strip() or "Untitled playlist", kind, json.dumps(rules) if rules else ""),
+            )
+        return cursor.lastrowid
+
+    def rename_playlist(self, playlist_id: int, name: str) -> None:
+        conn = self._connect()
+        with conn:
+            conn.execute(
+                "UPDATE playlists SET name = ?, updated_at = ? WHERE id = ?",
+                (name.strip() or "Untitled playlist", time.time(), playlist_id),
+            )
+
+    def set_playlist_rules(self, playlist_id: int, rules: dict) -> None:
+        from .core.playlist_rules import compile_rules
+
+        compile_rules(rules)
+        conn = self._connect()
+        with conn:
+            conn.execute(
+                "UPDATE playlists SET rules = ?, updated_at = ? WHERE id = ? AND kind = 'smart'",
+                (json.dumps(rules), time.time(), playlist_id),
+            )
+
+    def delete_playlist(self, playlist_id: int) -> None:
+        conn = self._connect()
+        with conn:
+            conn.execute("DELETE FROM playlists WHERE id = ?", (playlist_id,))
+
+    def query_rules(self, rules: dict) -> list[TrackRow]:
+        """The tracks a smart-playlist rule set matches right now."""
+        from .core.playlist_rules import compile_rules
+
+        sql, params = compile_rules(rules)
+        rows = self._connect().execute(f"SELECT * FROM tracks {sql}", params).fetchall()
+        return [self._row_to_track(r) for r in rows]
+
+    def playlist_tracks(self, playlist_id: int) -> list[TrackRow]:
+        playlist = self.get_playlist(playlist_id)
+        if playlist is None:
+            return []
+        if playlist.is_smart:
+            return self.query_rules(playlist.rules or {})
+        rows = self._connect().execute(
+            """
+            SELECT tracks.* FROM playlist_items
+            JOIN tracks ON tracks.id = playlist_items.track_id
+            WHERE playlist_items.playlist_id = ?
+            ORDER BY playlist_items.position
+            """,
+            (playlist_id,),
+        ).fetchall()
+        return [self._row_to_track(r) for r in rows]
+
+    def _playlist_track_ids(self, conn: sqlite3.Connection, playlist_id: int) -> list[int]:
+        rows = conn.execute(
+            "SELECT track_id FROM playlist_items WHERE playlist_id = ? ORDER BY position",
+            (playlist_id,),
+        ).fetchall()
+        return [r["track_id"] for r in rows]
+
+    def _write_playlist_ids(
+        self, conn: sqlite3.Connection, playlist_id: int, track_ids: list[int]
+    ) -> None:
+        """Replace a playlist's items wholesale, numbering positions 0..n-1.
+
+        Rewriting is simpler than shuffling positions in place under the
+        (playlist_id, position) key, and playlists are small.
+        """
+        conn.execute("DELETE FROM playlist_items WHERE playlist_id = ?", (playlist_id,))
+        conn.executemany(
+            "INSERT INTO playlist_items(playlist_id, track_id, position) VALUES (?, ?, ?)",
+            [(playlist_id, track_id, i) for i, track_id in enumerate(track_ids)],
+        )
+        conn.execute(
+            "UPDATE playlists SET updated_at = ? WHERE id = ?", (time.time(), playlist_id)
+        )
+
+    def add_to_playlist(self, playlist_id: int, paths: list[Path]) -> int:
+        """Append indexed ``paths`` in order. Returns how many were added;
+        paths not in the library are skipped. Duplicates are allowed, as in
+        any player's playlist."""
+        conn = self._connect()
+        new_ids = []
+        for path in paths:
+            row = conn.execute(
+                "SELECT id FROM tracks WHERE path = ?", (str(Path(path).resolve()),)
+            ).fetchone()
+            if row is not None:
+                new_ids.append(row["id"])
+        if new_ids:
+            with conn:
+                ids = self._playlist_track_ids(conn, playlist_id)
+                self._write_playlist_ids(conn, playlist_id, ids + new_ids)
+        return len(new_ids)
+
+    def remove_from_playlist(self, playlist_id: int, positions: list[int]) -> None:
+        conn = self._connect()
+        with conn:
+            drop = set(positions)
+            ids = self._playlist_track_ids(conn, playlist_id)
+            self._write_playlist_ids(
+                conn, playlist_id, [t for i, t in enumerate(ids) if i not in drop]
+            )
+
+    def move_in_playlist(self, playlist_id: int, positions: list[int], target: int) -> None:
+        """Move the items at ``positions`` (kept in their relative order) so
+        the first lands at ``target`` -- an index into the list as it was
+        before the move, which is what a drop indicator reports."""
+        conn = self._connect()
+        with conn:
+            ids = self._playlist_track_ids(conn, playlist_id)
+            chosen = sorted(set(p for p in positions if 0 <= p < len(ids)))
+            moving = [ids[p] for p in chosen]
+            target -= sum(1 for p in chosen if p < target)
+            rest = [t for i, t in enumerate(ids) if i not in set(chosen)]
+            target = max(0, min(target, len(rest)))
+            self._write_playlist_ids(conn, playlist_id, rest[:target] + moving + rest[target:])
 
 
 # ---------------------------------------------------------------------------

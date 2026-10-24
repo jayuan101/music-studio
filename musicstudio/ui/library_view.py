@@ -8,8 +8,10 @@ from pathlib import Path
 
 from PySide6.QtCore import (
     QAbstractTableModel,
+    QByteArray,
     QEvent,
     QFileSystemWatcher,
+    QMimeData,
     QModelIndex,
     QObject,
     QRunnable,
@@ -26,11 +28,15 @@ from PySide6.QtWidgets import (
     QFormLayout,
     QHBoxLayout,
     QHeaderView,
+    QInputDialog,
     QLabel,
     QLineEdit,
+    QListWidget,
+    QListWidgetItem,
     QMenu,
     QMessageBox,
     QPushButton,
+    QSplitter,
     QTableView,
     QVBoxLayout,
     QWidget,
@@ -40,12 +46,15 @@ from ..config import get_settings
 from ..core import autotrim as autotrim_module
 from ..core import crash_log
 from ..core import library_ops
+from ..core import m3u
+from ..core import playlist_rules
 from ..core import tags as tags_module
-from ..db import Library, TrackRow, scan_into_library
+from ..db import Library, Playlist, TrackRow, scan_into_library
 from . import theme
-from .common import card, confirm_delete, format_size, heading, section_label
+from .common import card, confirm_delete, format_duration, format_size, heading, section_label
 from .widgets.flow_layout import flow
 from .duplicates_dialog import DuplicatesDialog
+from .smart_playlist_dialog import SmartPlaylistDialog
 from .tag_panel import ArtworkView
 
 #: Smaller than the Tags & art page's own artwork box -- this is a
@@ -63,6 +72,9 @@ PREVIEW_CACHE_SIZE = 64
 #: an arrow key down walks through rows far faster than this, so only the row
 #: the user actually stops on costs a read.
 PREVIEW_READ_DELAY_MS = 90
+
+#: Mime type for dragging rows within a playlist to reorder it.
+_ROWS_MIME = "application/x-musicstudio-playlist-rows"
 
 #: (label, TagSet attribute) shown in the details panel, in order.
 _DETAIL_FIELDS = [
@@ -147,6 +159,14 @@ class _LibraryArtworkPreview(ArtworkView):
         )
 
 
+def _search_text(track: TrackRow) -> str:
+    """What the search box matches inside a playlist -- the same fields the
+    library-wide search does in SQL."""
+    return " ".join(
+        (track.title, track.artist, track.album, track.albumartist, track.genre, track.path.name)
+    ).casefold()
+
+
 def _format_added(added_at: float) -> str:
     """When a track entered the library, compact: "9/27/26 1:20 PM"."""
     if not added_at:
@@ -162,6 +182,10 @@ def _format_added(added_at: float) -> str:
 class TrackTableModel(QAbstractTableModel):
     """Table model over indexed tracks."""
 
+    #: Rows dragged within a reorderable (manual playlist) view: the dragged
+    #: rows, then the row they were dropped before (rowCount() for the end).
+    rows_dropped = Signal(list, int)
+
     COLUMNS = [
         "#", "Title", "Artist", "Album", "Album Artist", "Year", "Length",
         "Quality", "Art", "Genre", "Date added",
@@ -170,6 +194,8 @@ class TrackTableModel(QAbstractTableModel):
     def __init__(self, parent=None) -> None:
         super().__init__(parent)
         self._tracks: list[TrackRow] = []
+        #: True while showing a manual playlist, whose order is the user's.
+        self.reorderable = False
 
     def set_tracks(self, tracks: list[TrackRow]) -> None:
         self.beginResetModel()
@@ -209,6 +235,36 @@ class TrackTableModel(QAbstractTableModel):
 
     def columnCount(self, parent=QModelIndex()) -> int:
         return len(self.COLUMNS)
+
+    # -- drag to reorder (manual playlists only) ----------------------------
+    def flags(self, index: QModelIndex):
+        flags = super().flags(index)
+        if self.reorderable:
+            flags |= Qt.ItemIsDragEnabled if index.isValid() else Qt.ItemIsDropEnabled
+        return flags
+
+    def supportedDropActions(self):
+        return Qt.MoveAction
+
+    def mimeTypes(self) -> list[str]:
+        return [_ROWS_MIME]
+
+    def mimeData(self, indexes) -> QMimeData:
+        rows = sorted({i.row() for i in indexes})
+        data = QMimeData()
+        data.setData(_ROWS_MIME, QByteArray(",".join(map(str, rows)).encode()))
+        return data
+
+    def dropMimeData(self, data, action, row, column, parent) -> bool:
+        if not self.reorderable or not data.hasFormat(_ROWS_MIME):
+            return False
+        rows = [int(r) for r in bytes(data.data(_ROWS_MIME)).decode().split(",") if r]
+        if row < 0:
+            row = parent.row() if parent.isValid() else self.rowCount()
+        self.rows_dropped.emit(rows, row)
+        # False: the playlist is rewritten in the database and reloaded, so
+        # the view must not also delete the dragged rows itself.
+        return False
 
     def headerData(self, section, orientation, role=Qt.DisplayRole):
         if orientation == Qt.Horizontal and role == Qt.DisplayRole:
@@ -306,6 +362,11 @@ class LibraryPanel(QWidget):
         self._preview_timer.setInterval(PREVIEW_READ_DELAY_MS)
         self._preview_timer.timeout.connect(self._start_preview_read)
 
+        #: The playlist being shown, or None for the whole library.
+        self._playlist: Playlist | None = None
+        #: For each visible row in a playlist view, its position in the playlist.
+        self._row_positions: list[int] = []
+
         self._build()
         self.setAcceptDrops(True)
 
@@ -345,10 +406,20 @@ class LibraryPanel(QWidget):
         body.setSpacing(16)
         outer_layout.addLayout(body, 1)
 
-        layout = QVBoxLayout()
+        # Playlists on the left, in a splitter so the list can be widened for
+        # long names; the remembered width comes back next session.
+        self.splitter = QSplitter(Qt.Horizontal)
+        self.splitter.setChildrenCollapsible(False)
+        self.splitter.addWidget(self._build_sources())
+        middle = QWidget()
+        layout = QVBoxLayout(middle)
         layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(14)
-        body.addLayout(layout, 1)
+        self.splitter.addWidget(middle)
+        self.splitter.setStretchFactor(1, 1)
+        self.splitter.setSizes([get_settings().library_sources_width, 10_000])
+        self.splitter.splitterMoved.connect(self._on_splitter_moved)
+        body.addWidget(self.splitter, 1)
         body.addWidget(self._build_artwork_preview())
 
         # -- toolbar ----------------------------------------------------
@@ -406,6 +477,9 @@ class LibraryPanel(QWidget):
         self.table.selectionModel().selectionChanged.connect(self._on_selection_changed)
         self.table.setContextMenuPolicy(Qt.CustomContextMenu)
         self.table.customContextMenuRequested.connect(self._show_context_menu)
+        self.table.setDropIndicatorShown(True)
+        self.table.setDefaultDropAction(Qt.MoveAction)
+        self.model.rows_dropped.connect(self._on_rows_dropped)
 
         header = self.table.horizontalHeader()
         header.setSectionResizeMode(0, QHeaderView.Fixed)
@@ -486,10 +560,20 @@ class LibraryPanel(QWidget):
         layout.addWidget(self.status_label)
         layout.addWidget(flow(*buttons, align_right=True))
         self._update_actions()
+        self._reload_sources()
 
     # -- data -----------------------------------------------------------
     def refresh(self) -> None:
         self._apply_search(self.search_box.text() if hasattr(self, "search_box") else "")
+        if self._playlist is not None:
+            tracks = self.library.playlist_tracks(self._playlist.id)
+            total = sum(t.duration for t in tracks)
+            kind = "Smart playlist" if self._playlist.is_smart else "Playlist"
+            text = f"{kind} · {len(tracks)} songs · {format_duration(total)}"
+            if self._playlist.is_smart:
+                text += f" · {playlist_rules.describe_rules(self._playlist.rules or {})}"
+            self.status_label.setText(text)
+            return
         stats = self.library.stats()
         if stats["tracks"]:
             self.status_label.setText(
@@ -551,11 +635,25 @@ class LibraryPanel(QWidget):
         self._apply_hidden_columns()
 
     def _apply_search(self, term: str) -> None:
-        self.model.set_tracks(self.library.search(term))
-        # A model reset does not re-sort itself, so a search keystroke or a
-        # rescan would otherwise silently drop the user's chosen sort column.
-        header = self.table.horizontalHeader()
-        self.table.sortByColumn(header.sortIndicatorSection(), header.sortIndicatorOrder())
+        if self._playlist is None:
+            self._row_positions = []
+            self.model.set_tracks(self.library.search(term))
+            # A model reset does not re-sort itself, so a search keystroke or a
+            # rescan would otherwise silently drop the user's chosen sort column.
+            header = self.table.horizontalHeader()
+            self.table.sortByColumn(header.sortIndicatorSection(), header.sortIndicatorOrder())
+        else:
+            # A playlist's order is its own (or its rule's), so it is never
+            # re-sorted; searching just narrows it. Each visible row remembers
+            # its position in the full playlist for remove and reorder.
+            needle = term.strip().casefold()
+            pairs = [
+                (position, track)
+                for position, track in enumerate(self.library.playlist_tracks(self._playlist.id))
+                if not needle or needle in _search_text(track)
+            ]
+            self._row_positions = [p for p, _ in pairs]
+            self.model.set_tracks([t for _, t in pairs])
         self._update_actions()
 
     def selected_paths(self) -> list[Path]:
@@ -774,6 +872,21 @@ class LibraryPanel(QWidget):
         play_action.triggered.connect(lambda: self.play_requested.emit(self.all_paths(), index.row()))
         menu.addSeparator()
 
+        add_menu = menu.addMenu("Add to playlist")
+        manual = [p for p in self.library.playlists() if not p.is_smart]
+        for playlist in manual:
+            action = add_menu.addAction(playlist.name)
+            action.triggered.connect(
+                lambda _=False, pid=playlist.id: self._add_to_playlist(pid, paths)
+            )
+        if manual:
+            add_menu.addSeparator()
+        add_menu.addAction("New playlist…").triggered.connect(lambda: self._new_playlist(paths))
+        if self._playlist is not None and not self._playlist.is_smart:
+            remove_action = menu.addAction("Remove from playlist")
+            remove_action.triggered.connect(self._remove_selected_from_playlist)
+        menu.addSeparator()
+
         edit_audio_action = menu.addAction("Edit audio…")
         edit_audio_action.setEnabled(len(paths) == 1)
         edit_audio_action.triggered.connect(self._emit_edit)
@@ -799,6 +912,229 @@ class LibraryPanel(QWidget):
         delete_action.triggered.connect(self._delete_selected)
 
         menu.exec(self.table.viewport().mapToGlobal(position))
+
+    # -- playlists ------------------------------------------------------
+    def _build_sources(self) -> QWidget:
+        self.sources = QListWidget()
+        self.sources.setContextMenuPolicy(Qt.CustomContextMenu)
+        self.sources.customContextMenuRequested.connect(self._show_sources_menu)
+        self.sources.itemSelectionChanged.connect(self._on_source_changed)
+        self.sources.itemDoubleClicked.connect(self._play_source_item)
+        self.sources.setToolTip("Double-click a playlist to play it. Right-click for more.")
+
+        new_button = QPushButton("New playlist")
+        new_menu = QMenu(new_button)
+        new_menu.addAction("Playlist…").triggered.connect(lambda: self._new_playlist([]))
+        new_menu.addAction("Smart playlist…").triggered.connect(self._new_smart_playlist)
+        new_button.setMenu(new_menu)
+
+        panel = QWidget()
+        panel.setMinimumWidth(130)
+        panel_layout = QVBoxLayout(panel)
+        panel_layout.setContentsMargins(0, 0, 0, 0)
+        panel_layout.setSpacing(8)
+        panel_layout.addWidget(self.sources, 1)
+        panel_layout.addWidget(new_button)
+        return panel
+
+    def _reload_sources(self, select_id: int | None = None) -> None:
+        """Rebuild the list, keeping (or moving to) the selection asked for."""
+        if select_id is None and self._playlist is not None:
+            select_id = self._playlist.id
+        self.sources.blockSignals(True)
+        self.sources.clear()
+
+        all_item = QListWidgetItem("All music")
+        all_item.setData(Qt.UserRole, None)
+        self.sources.addItem(all_item)
+        selected = all_item
+
+        playlists = self.library.playlists()
+        for smart, title in ((False, "Playlists"), (True, "Smart playlists")):
+            group = [p for p in playlists if p.is_smart == smart]
+            if not group:
+                continue
+            header = QListWidgetItem(title.upper())
+            header.setFlags(Qt.NoItemFlags)
+            header.setForeground(QColor(theme.TEXT_FAINT))
+            self.sources.addItem(header)
+            for playlist in group:
+                item = QListWidgetItem(("✦ " if smart else "") + playlist.name)
+                item.setData(Qt.UserRole, playlist)
+                item.setToolTip(
+                    playlist_rules.describe_rules(playlist.rules or {}) if smart else playlist.name
+                )
+                self.sources.addItem(item)
+                if playlist.id == select_id:
+                    selected = item
+        selected.setSelected(True)
+        self.sources.setCurrentItem(selected)
+        self.sources.blockSignals(False)
+        self._set_playlist(selected.data(Qt.UserRole))
+
+    def _on_source_changed(self) -> None:
+        items = self.sources.selectedItems()
+        self._set_playlist(items[0].data(Qt.UserRole) if items else None)
+        self.refresh()
+
+    def _set_playlist(self, playlist: Playlist | None) -> None:
+        self._playlist = playlist
+        in_library = playlist is None
+        manual = playlist is not None and not playlist.is_smart
+        # Header sorting only makes sense for the whole library; a playlist's
+        # order is the user's (manual) or the rule's (smart).
+        self.table.setSortingEnabled(in_library)
+        self.table.horizontalHeader().setSortIndicatorShown(in_library)
+        self.model.reorderable = manual
+        self.table.setDragDropMode(
+            QAbstractItemView.InternalMove if manual else QAbstractItemView.NoDragDrop
+        )
+
+    def _on_splitter_moved(self, *_) -> None:
+        settings = get_settings()
+        settings.library_sources_width = self.splitter.sizes()[0]
+        try:
+            settings.save()
+        except OSError:
+            pass
+
+    def _play_source_item(self, item: QListWidgetItem) -> None:
+        playlist = item.data(Qt.UserRole)
+        tracks = (
+            self.library.playlist_tracks(playlist.id) if playlist else self.library.all_tracks()
+        )
+        if tracks:
+            self.play_requested.emit([t.path for t in tracks], 0)
+
+    def _show_sources_menu(self, position) -> None:
+        item = self.sources.itemAt(position)
+        playlist = item.data(Qt.UserRole) if item is not None else None
+        menu = QMenu(self)
+        if isinstance(playlist, Playlist):
+            menu.addAction("Play").triggered.connect(lambda: self._play_source_item(item))
+            menu.addSeparator()
+            menu.addAction("Rename…").triggered.connect(lambda: self._rename_playlist(playlist))
+            if playlist.is_smart:
+                menu.addAction("Edit rules…").triggered.connect(
+                    lambda: self._edit_smart_playlist(playlist)
+                )
+            menu.addAction("Export as M3U…").triggered.connect(
+                lambda: self._export_playlist(playlist)
+            )
+            menu.addSeparator()
+            menu.addAction("Delete playlist…").triggered.connect(
+                lambda: self._delete_playlist(playlist)
+            )
+        else:
+            menu.addAction("New playlist…").triggered.connect(lambda: self._new_playlist([]))
+            menu.addAction("New smart playlist…").triggered.connect(self._new_smart_playlist)
+        menu.exec(self.sources.viewport().mapToGlobal(position))
+
+    def _new_playlist(self, paths: list[Path]) -> None:
+        name, ok = QInputDialog.getText(self, "New playlist", "Name:", text="New playlist")
+        if not ok:
+            return
+        playlist_id = self.library.create_playlist(name)
+        if paths:
+            self.library.add_to_playlist(playlist_id, paths)
+            # Adding from the table: stay where the user is, just list it.
+            self._reload_sources()
+            self.status_label.setText(f"Added {len(paths)} song(s) to “{name.strip()}”")
+        else:
+            self._reload_sources(select_id=playlist_id)
+            self.refresh()
+
+    def _new_smart_playlist(self) -> None:
+        dialog = SmartPlaylistDialog(self.library, parent=self)
+        if dialog.exec():
+            playlist_id = self.library.create_playlist(dialog.name(), "smart", dialog.rules())
+            self._reload_sources(select_id=playlist_id)
+            self.refresh()
+
+    def _edit_smart_playlist(self, playlist: Playlist) -> None:
+        dialog = SmartPlaylistDialog(
+            self.library, name=playlist.name, rules=playlist.rules, parent=self
+        )
+        if dialog.exec():
+            self.library.rename_playlist(playlist.id, dialog.name())
+            self.library.set_playlist_rules(playlist.id, dialog.rules())
+            self._reload_sources(select_id=playlist.id)
+            self.refresh()
+
+    def _rename_playlist(self, playlist: Playlist) -> None:
+        name, ok = QInputDialog.getText(self, "Rename playlist", "Name:", text=playlist.name)
+        if ok and name.strip():
+            self.library.rename_playlist(playlist.id, name)
+            self._reload_sources()
+
+    def _delete_playlist(self, playlist: Playlist) -> None:
+        answer = QMessageBox.question(
+            self,
+            "Delete playlist",
+            f"Delete the playlist “{playlist.name}”?\n\n"
+            "Only the playlist is deleted. The songs stay in your library.",
+        )
+        if answer != QMessageBox.Yes:
+            return
+        self.library.delete_playlist(playlist.id)
+        if self._playlist is not None and self._playlist.id == playlist.id:
+            self._playlist = None
+        self._reload_sources()
+        self.refresh()
+
+    def _export_playlist(self, playlist: Playlist) -> None:
+        settings = get_settings()
+        start_dir = Path(settings.playlist_export_dir or Path.home())
+        safe_name = "".join(c for c in playlist.name if c not in '<>:"/\\|?*').strip()
+        target, _ = QFileDialog.getSaveFileName(
+            self,
+            "Export playlist",
+            str(start_dir / f"{safe_name or 'playlist'}.m3u8"),
+            "M3U playlist (*.m3u8 *.m3u)",
+        )
+        if not target:
+            return
+        try:
+            count = m3u.write_m3u(Path(target), self.library.playlist_tracks(playlist.id))
+        except OSError as exc:
+            QMessageBox.warning(self, "Export playlist", f"Could not write the playlist: {exc}")
+            return
+        settings.playlist_export_dir = str(Path(target).parent)
+        try:
+            settings.save()
+        except OSError:
+            pass
+        self.status_label.setText(f"Exported {count} song(s) to {target}")
+
+    def _add_to_playlist(self, playlist_id: int, paths: list[Path]) -> None:
+        added = self.library.add_to_playlist(playlist_id, paths)
+        playlist = self.library.get_playlist(playlist_id)
+        name = playlist.name if playlist else "playlist"
+        if self._playlist is not None and self._playlist.id == playlist_id:
+            self.refresh()
+        self.status_label.setText(f"Added {added} song(s) to “{name}”")
+
+    def _remove_selected_from_playlist(self) -> None:
+        if self._playlist is None or self._playlist.is_smart:
+            return
+        rows = {index.row() for index in self.table.selectionModel().selectedRows()}
+        positions = [self._row_positions[r] for r in rows if r < len(self._row_positions)]
+        if positions:
+            self.library.remove_from_playlist(self._playlist.id, positions)
+            self.refresh()
+
+    def _on_rows_dropped(self, rows: list[int], target_row: int) -> None:
+        if self._playlist is None or self._playlist.is_smart:
+            return
+        positions = [self._row_positions[r] for r in rows if r < len(self._row_positions)]
+        if not positions:
+            return
+        if target_row < len(self._row_positions):
+            target = self._row_positions[target_row]
+        else:
+            target = (self._row_positions[-1] + 1) if self._row_positions else 0
+        self.library.move_in_playlist(self._playlist.id, positions, target)
+        self.refresh()
 
     # -- import ---------------------------------------------------------
     def _choose_files(self) -> None:

@@ -182,6 +182,10 @@ class Settings:
     #: default the two least useful ones make room for "Date added".
     library_hidden_columns: list[str] = field(
         default_factory=lambda: ["Album Artist", "Art"])
+    #: Width of the Library page's playlist list, as last dragged.
+    library_sources_width: int = 190
+    #: Folder the last playlist was exported to as M3U.
+    playlist_export_dir: str = ""
 
     # -- Personal AI ------------------------------------------------------
     #: Local model backend. Ollama runs as a separate process the user
