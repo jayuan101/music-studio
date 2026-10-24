@@ -45,6 +45,7 @@ from PySide6.QtWidgets import (
 from ..config import get_settings
 from ..core import autotrim as autotrim_module
 from ..core import crash_log
+from ..core import fingerprint
 from ..core import library_ops
 from ..core import m3u
 from ..core import playlist_rules
@@ -345,6 +346,7 @@ class LibraryPanel(QWidget):
     replaygain_requested = Signal(list)
     authenticity_requested = Signal(list)
     lyrics_requested = Signal(list)
+    identify_requested = Signal(list)
     #: Double-click: play this track, queuing every track currently visible
     #: (respecting the active search/sort) -- paths, then the clicked row's
     #: index within that list.
@@ -935,6 +937,18 @@ class LibraryPanel(QWidget):
         artwork_action.triggered.connect(lambda: self.artwork_requested.emit(paths))
         fix_tags_action = menu.addAction("Fix metadata")
         fix_tags_action.triggered.connect(lambda: self.tags_fix_requested.emit(paths))
+        identify_action = menu.addAction("Identify by sound…")
+        if fingerprint.is_configured():
+            identify_action.setToolTip(
+                "Name these songs by matching their audio against AcoustID, then fill in "
+                "the rest as Fix metadata does. Only fills blanks."
+            )
+            identify_action.triggered.connect(lambda: self.identify_requested.emit(paths))
+        else:
+            identify_action.setEnabled(False)
+            identify_action.setToolTip(
+                "Needs fpcalc and an AcoustID key -- see Preferences > Identify by sound."
+            )
         ytmusic_action = menu.addAction("YouTube Music format…")
         ytmusic_action.triggered.connect(lambda: self.ytmusic_format_requested.emit(paths))
         auto_trim_action = menu.addAction("Auto-trim intro/outro…")

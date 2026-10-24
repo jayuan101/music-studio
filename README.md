@@ -28,6 +28,10 @@ out in whatever format you need — at the best quality the source allows.
   current line above the transport. Turn on *Show synced lyrics while
   playing* in Preferences to look songs up as they play (it sends the
   artist, title and length to lrclib.net, so it is off by default).
+- **Identify by sound** — for songs with no usable tags or filename, right-click
+  and choose *Identify by sound…*: a short audio fingerprint is matched against
+  the free AcoustID database to name the song, then the usual *Fix metadata*
+  lookups fill in the rest. Needs `fpcalc` and an AcoustID key (Preferences).
 - **Search** YouTube directly from the Download page, and play a result the
   moment it downloads, to decide whether you actually want it.
 - **Import** anything ffmpeg can decode (which is essentially everything).
@@ -244,6 +248,10 @@ python -m musicstudio
 You will need `ffmpeg` and `ffprobe` on your PATH, or placed in
 `vendor/ffmpeg/`.
 
+Optional: put Chromaprint's `fpcalc` in `vendor/chromaprint/` (or on your PATH)
+to enable *Identify by sound*, and paste a free AcoustID application key into
+Preferences (acoustid.org/new-application).
+
 ### Building the Windows executable
 
 ```bash
@@ -254,7 +262,7 @@ pyinstaller --noconfirm --clean MusicStudio.spec
 
 Output lands in `dist/MusicStudio/`. CI does this automatically — see
 `.github/workflows/build.yml`, which runs on `v*` tags or on demand, and
-downloads ffmpeg itself.
+downloads ffmpeg (and, optionally, fpcalc) itself.
 
 ### Installing it properly
 

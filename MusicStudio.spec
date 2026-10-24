@@ -17,6 +17,7 @@ block_cipher = None
 
 PROJECT_ROOT = Path(SPECPATH)
 VENDOR_FFMPEG = PROJECT_ROOT / "vendor" / "ffmpeg"
+VENDOR_CHROMAPRINT = PROJECT_ROOT / "vendor" / "chromaprint"
 
 # Refuse to build from an environment that doesn't satisfy requirements.txt.
 # v1.4.9 froze yt-dlp 2026.7.4 while requirements.txt already asked for
@@ -46,6 +47,17 @@ if VENDOR_FFMPEG.is_dir():
                 break
 else:
     print("WARNING: vendor/ffmpeg not found -- the build will have no bundled ffmpeg.")
+
+# fpcalc (Chromaprint) powers "Identify by sound". It is optional: without it
+# core/fingerprint.py reports itself unavailable and the feature stays off, so
+# a missing folder is a note, not a build failure.
+for candidate in (VENDOR_CHROMAPRINT / "fpcalc.exe", VENDOR_CHROMAPRINT / "fpcalc"):
+    if candidate.is_file():
+        # Lands in a "chromaprint" subfolder, which core/fingerprint.py checks first.
+        binaries.append((str(candidate), "chromaprint"))
+        break
+else:
+    print("note: vendor/chromaprint/fpcalc not found -- 'Identify by sound' will be unavailable.")
 
 a = Analysis(
     ["run_musicstudio.py"],

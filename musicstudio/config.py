@@ -174,6 +174,14 @@ class Settings:
     #: (The Library's explicit "Download lyrics" action ignores this.)
     lyrics_online_enabled: bool = False
 
+    # -- Identify by sound (core/fingerprint.py) -------------------------
+    #: Also name songs from their sound during "Fix metadata", when they have
+    #: no artist or title. Sends a short audio fingerprint to acoustid.org.
+    identify_by_sound: bool = False
+    #: Free AcoustID application key (https://acoustid.org/new-application).
+    #: It identifies this app rather than the user, so it is not a secret.
+    acoustid_api_key: str = ""
+
     # -- UI -------------------------------------------------------------
     theme: str = "dark"
     library_paths: list[str] = field(default_factory=list)

@@ -28,6 +28,7 @@ from .. import __version__
 from ..config import get_settings
 from ..core import artwork as artwork_module
 from ..core import assistant as assistant_module
+from ..core import fingerprint
 from ..core import organise
 from ..core import secrets
 from ..core import spotify as spotify_module
@@ -74,6 +75,7 @@ class SettingsPanel(QWidget):
         layout.addWidget(self._build_output_card())
         layout.addWidget(self._build_quality_card())
         layout.addWidget(self._build_artwork_card())
+        layout.addWidget(self._build_identify_card())
         layout.addWidget(self._build_editor_card())
         layout.addWidget(self._build_playback_card())
         layout.addWidget(self._build_download_card())
@@ -292,6 +294,53 @@ class SettingsPanel(QWidget):
         form_layout.addRow("Normalise to", self.loudnorm_target)
 
         return card(section_label("Editor"), form, self.gain_hint)
+
+    def _build_identify_card(self) -> QWidget:
+        self.identify_by_sound = QCheckBox("Also identify songs by their sound in Fix metadata")
+        self.identify_by_sound.setToolTip(
+            "For songs with no artist or title, a short audio fingerprint is sent to "
+            "acoustid.org to name them. (The Library's right-click “Identify by sound” "
+            "works whether or not this is on.)"
+        )
+        self.identify_by_sound.toggled.connect(self._save)
+
+        self.acoustid_key = QLineEdit()
+        self.acoustid_key.setPlaceholderText("AcoustID application key")
+        self.acoustid_key.editingFinished.connect(self._save)
+
+        self.identify_status = QLabel("")
+        self.identify_status.setObjectName("Hint")
+        self.identify_status.setWordWrap(True)
+
+        hint = QLabel(
+            "Names songs whose tags and filename say nothing, by matching their audio "
+            "against the free AcoustID database. It needs a free application key from "
+            "acoustid.org/new-application (it identifies this app, not you) and the "
+            "Chromaprint tool “fpcalc”."
+        )
+        hint.setObjectName("Hint")
+        hint.setWordWrap(True)
+
+        form = QWidget()
+        form_layout = QFormLayout(form)
+        form_layout.setContentsMargins(0, 0, 0, 0)
+        form_layout.setSpacing(8)
+        form_layout.addRow("AcoustID key", self.acoustid_key)
+
+        return card(section_label("Identify by sound"), form, self.identify_by_sound,
+                    self.identify_status, hint)
+
+    def _update_identify_status(self) -> None:
+        exe = fingerprint.find_fpcalc()
+        has_key = bool(self.acoustid_key.text().strip())
+        if exe is None:
+            text = ("fpcalc not found -- put fpcalc.exe in the app's vendor/chromaprint "
+                    "folder, or on your PATH.")
+        elif not has_key:
+            text = "fpcalc found. Paste an AcoustID key above to turn this on."
+        else:
+            text = "Ready: fpcalc found and a key is set."
+        self.identify_status.setText(text)
 
     def _build_playback_card(self) -> QWidget:
         self.replaygain_mode = QComboBox()
@@ -592,6 +641,9 @@ class SettingsPanel(QWidget):
         self.replaygain_mode.setCurrentIndex(max(0, index))
         self.replaygain_preamp.setValue(s.replaygain_preamp_db)
         self.lyrics_online.setChecked(s.lyrics_online_enabled)
+        self.identify_by_sound.setChecked(s.identify_by_sound)
+        self.acoustid_key.setText(s.acoustid_api_key)
+        self._update_identify_status()
 
         index = self.download_mode.findData(s.download_mode)
         self.download_mode.setCurrentIndex(max(0, index))
@@ -655,6 +707,9 @@ class SettingsPanel(QWidget):
         s.replaygain_mode = self.replaygain_mode.currentData() or "track"
         s.replaygain_preamp_db = self.replaygain_preamp.value()
         s.lyrics_online_enabled = self.lyrics_online.isChecked()
+        s.identify_by_sound = self.identify_by_sound.isChecked()
+        s.acoustid_api_key = self.acoustid_key.text().strip()
+        self._update_identify_status()
 
         s.download_mode = self.download_mode.currentData()
         s.download_embed_thumbnail = self.download_thumbnail.isChecked()

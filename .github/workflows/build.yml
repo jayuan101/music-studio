@@ -103,6 +103,22 @@ jobs:
           }
           ./vendor/ffmpeg/ffmpeg.exe -version | Select-Object -First 1
 
+      - name: Fetch fpcalc (Chromaprint) for "Identify by sound"
+        shell: pwsh
+        # Optional: the app runs without it and just hides the feature, so a
+        # failed download must not fail the build.
+        continue-on-error: true
+        run: |
+          $url = "https://github.com/acoustid/chromaprint/releases/download/v1.5.1/chromaprint-fpcalc-1.5.1-windows-x86_64.zip"
+          Write-Host "Downloading $url"
+          Invoke-WebRequest -Uri $url -OutFile chromaprint.zip -UseBasicParsing
+          Expand-Archive -Path chromaprint.zip -DestinationPath chromaprint-extracted -Force
+
+          New-Item -ItemType Directory -Force -Path vendor/chromaprint | Out-Null
+          Get-ChildItem -Path chromaprint-extracted -Recurse -Filter fpcalc.exe |
+            ForEach-Object { Copy-Item $_.FullName -Destination vendor/chromaprint -Force }
+          ./vendor/chromaprint/fpcalc.exe -version
+
       - name: Build with PyInstaller
         run: pyinstaller --noconfirm --clean MusicStudio.spec
 

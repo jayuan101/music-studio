@@ -586,7 +586,9 @@ class TagPanel(QWidget):
 
             def work(context):
                 context.progress(None, f"Fixing metadata for {path.name}")
-                return tag_fix_module.fix_file_tags(path, baseline=baseline)
+                return tag_fix_module.fix_file_tags(
+                    path, baseline=baseline, use_fingerprint=get_settings().identify_by_sound
+                )
 
             job = self.jobs.submit_func("Fix metadata", work, category="tags")
             job.signals.finished.connect(self._on_fix_single)

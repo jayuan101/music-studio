@@ -26,6 +26,7 @@ import httpx
 
 from .. import __version__
 from ..config import Settings, get_settings
+from . import fingerprint as fingerprint_module
 from . import tags as tags_module
 from .artwork import ITUNES_API, search_musicbrainz
 from .tags import TagSet
@@ -266,28 +267,52 @@ def guess_from_online(tags: TagSet, *, settings: Settings | None = None) -> TagS
     return guess or TagSet()
 
 
+def _fix(
+    path: str | Path,
+    baseline: TagSet | None,
+    settings: Settings,
+    use_online: bool,
+    use_fingerprint: bool,
+) -> tuple[TagSet, bool]:
+    """fix_file_tags' work, also reporting whether the song was identified by
+    its sound (so a bulk run can say how many it recognised)."""
+    existing = baseline if baseline is not None else tags_module.try_read(path)
+
+    merged = existing
+    identified = False
+    if use_fingerprint and (not existing.artist or not existing.title):
+        # Ahead of the filename guess: for "track01.flac" the guess is junk
+        # that would otherwise fill the title and block the real one.
+        heard = fingerprint_module.identify(Path(path))
+        if heard is not None and not heard.is_empty():
+            merged = merged.merged_with(heard, overwrite=False)
+            identified = True
+
+    merged = merged.merged_with(guess_from_filename(path), overwrite=False)
+    if use_online and (not merged.album or not merged.date or not merged.genre):
+        merged = merged.merged_with(guess_from_online(merged, settings=settings), overwrite=False)
+    return merged, identified
+
+
 def fix_file_tags(
     path: str | Path,
     *,
     baseline: TagSet | None = None,
     settings: Settings | None = None,
     use_online: bool = True,
+    use_fingerprint: bool = False,
 ) -> TagSet:
     """Return the tags ``path`` should have.
 
     Starts from ``baseline`` (the caller's current view of the tags, e.g. an
     in-progress edit in the UI) or, if not given, whatever is already on
-    disk -- then fills blanks from the filename, then, if fields of real
-    interest are still missing, from an online lookup. Existing values are
-    never overwritten.
+    disk -- then, when the file has no artist or title and ``use_fingerprint``
+    is set, names the song from its sound (core/fingerprint.py), then fills
+    blanks from the filename, then, if fields of real interest are still
+    missing, from an online lookup. Existing values are never overwritten.
     """
     settings = settings or get_settings()
-    existing = baseline if baseline is not None else tags_module.try_read(path)
-
-    merged = existing.merged_with(guess_from_filename(path), overwrite=False)
-    if use_online and (not merged.album or not merged.date or not merged.genre):
-        merged = merged.merged_with(guess_from_online(merged, settings=settings), overwrite=False)
-    return merged
+    return _fix(path, baseline, settings, use_online, use_fingerprint)[0]
 
 
 @dataclass
@@ -297,6 +322,8 @@ class TagFixResult:
     path: Path
     updated: bool
     reason: str
+    #: The song was named from its sound (core/fingerprint.py).
+    identified: bool = False
 
 
 def fix_library_tags(
@@ -304,13 +331,18 @@ def fix_library_tags(
     *,
     settings: Settings | None = None,
     context=None,
+    use_fingerprint: bool | None = None,
 ) -> list[TagFixResult]:
     """Bulk 'fix all metadata' over a set of files.
 
     One file failing never stops the batch. Only files where the fix
-    actually changed something are written back to disk.
+    actually changed something are written back to disk. ``use_fingerprint``
+    defaults to the "identify by sound" preference; the Library's explicit
+    "Identify by sound" action passes True.
     """
     settings = settings or get_settings()
+    if use_fingerprint is None:
+        use_fingerprint = settings.identify_by_sound
     results: list[TagFixResult] = []
     total = len(paths)
 
@@ -320,12 +352,14 @@ def fix_library_tags(
             context.progress(index / total if total else None, f"Fixing tags: {Path(path).name}")
         try:
             existing = tags_module.try_read(path)
-            fixed = fix_file_tags(path, baseline=existing, settings=settings)
+            fixed, identified = _fix(path, existing, settings, True, use_fingerprint)
             if fixed.to_dict() == existing.to_dict():
                 results.append(TagFixResult(Path(path), False, "Nothing missing"))
                 continue
             tags_module.write(path, fixed)
-            results.append(TagFixResult(Path(path), True, "Filled in missing fields"))
+            results.append(
+                TagFixResult(Path(path), True, "Filled in missing fields", identified=identified)
+            )
         except Exception as exc:  # noqa: BLE001 -- keep going through the batch
             results.append(TagFixResult(Path(path), False, f"Failed: {exc}"))
 

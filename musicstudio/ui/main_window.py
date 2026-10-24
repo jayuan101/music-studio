@@ -238,6 +238,7 @@ class MainWindow(QMainWindow):
         self.library_panel.replaygain_requested.connect(self._replaygain_selected)
         self.library_panel.authenticity_requested.connect(self._check_authenticity)
         self.library_panel.lyrics_requested.connect(self._download_lyrics)
+        self.library_panel.identify_requested.connect(self._identify_selected)
         self.library_panel.play_requested.connect(self.now_playing_bar.play_queue)
         self.library_panel.queue_next_requested.connect(self._queue_next)
         self.library_panel.queue_append_requested.connect(self._queue_append)
@@ -398,6 +399,34 @@ class MainWindow(QMainWindow):
             f"Fixing metadata for {len(paths)} track(s)", work, paths, category="tags"
         )
         job.signals.finished.connect(self._on_tags_fixed)
+
+    def _identify_selected(self, paths: list[Path]) -> None:
+        if not paths:
+            self.status_message.setText("Nothing selected to identify")
+            return
+        self._release_file_locks(paths)
+
+        def work(context, targets):
+            return tag_fix_module.fix_library_tags(
+                targets, context=context, use_fingerprint=True
+            )
+
+        job = self.jobs.submit_func(
+            f"Identifying {len(paths)} track(s) by sound", work, paths, category="tags"
+        )
+        job.signals.finished.connect(self._on_identified)
+
+    def _on_identified(self, _job_id: str, state: str, payload) -> None:
+        if state != "succeeded":
+            self.status_message.setText(f"Identify by sound failed: {payload}")
+            return
+        heard = [r for r in payload if r.identified]
+        updated = [r for r in payload if r.updated]
+        self.status_message.setText(
+            f"Identified {len(heard)} of {len(payload)} track(s) by sound; "
+            f"{len(updated)} updated"
+        )
+        self._reindex([r.path for r in updated])
 
     def _on_tags_fixed(self, _job_id: str, state: str, payload) -> None:
         if state != "succeeded":
