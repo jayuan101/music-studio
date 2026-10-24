@@ -79,6 +79,41 @@ class PlaybackQueue(QObject):
         self.current_changed.emit(self.current)
         self.queue_changed.emit()
 
+    def insert_next(self, tracks: list[Path]) -> None:
+        """Play ``tracks`` right after the current one, keeping the rest.
+
+        They go into ``_tracks`` just after the current track's own slot and
+        into ``_order`` just after the current position, so they follow it
+        with shuffle on *and* stay beside it if shuffle is turned off later
+        (which rebuilds ``_order`` from ``_tracks``). Only queue_changed is
+        emitted: current_changed would reload and restart the song.
+        """
+        tracks = list(tracks)
+        if not tracks:
+            return
+        if self.is_empty:
+            self.set_tracks(tracks, 0)
+            return
+        count = len(tracks)
+        at = self._order[self._position] + 1
+        self._tracks[at:at] = tracks
+        self._order = [i + count if i >= at else i for i in self._order]
+        self._order[self._position + 1:self._position + 1] = range(at, at + count)
+        self.queue_changed.emit()
+
+    def append(self, tracks: list[Path]) -> None:
+        """Add ``tracks`` to the end of the queue."""
+        tracks = list(tracks)
+        if not tracks:
+            return
+        if self.is_empty:
+            self.set_tracks(tracks, 0)
+            return
+        first = len(self._tracks)
+        self._tracks.extend(tracks)
+        self._order.extend(range(first, first + len(tracks)))
+        self.queue_changed.emit()
+
     def clear(self) -> None:
         self._tracks, self._order, self._position = [], [], -1
         self.current_changed.emit(None)
@@ -164,6 +199,8 @@ class NowPlayingBar(QWidget):
         super().__init__(parent)
         #: Where ReplayGain values come from; None plays everything unadjusted.
         self.library = library
+        #: The queue ran out and playback stopped; see _resume_if_finished.
+        self._finished = False
         self.queue = PlaybackQueue(self)
         self.player = Player()
         # Track info is read off the GUI thread; see AsyncTagReader. No debounce
@@ -248,7 +285,28 @@ class NowPlayingBar(QWidget):
     def play_queue(self, tracks: list[Path], start_index: int = 0) -> None:
         """Queue ``tracks`` (e.g. everything currently visible in the
         Library) and start playing from ``start_index``."""
+        self._finished = False
         self.queue.set_tracks(tracks, start_index)
+
+    def queue_next(self, tracks: list[Path]) -> None:
+        """Play ``tracks`` after the current song."""
+        self.queue.insert_next(tracks)
+        self._resume_if_finished()
+
+    def queue_append(self, tracks: list[Path]) -> None:
+        """Add ``tracks`` to the end of the queue."""
+        self.queue.append(tracks)
+        self._resume_if_finished()
+
+    def _resume_if_finished(self) -> None:
+        """If the queue had already played out, start on what was just added.
+
+        The last song ending leaves the queue parked on it with the player
+        stopped, so nothing would otherwise pick up a song queued afterwards.
+        """
+        if self._finished:
+            self._finished = False
+            self.queue.next()
 
     def _on_current_changed(self, path: object) -> None:
         track = Path(path) if path else None
@@ -328,6 +386,7 @@ class NowPlayingBar(QWidget):
             self._on_current_changed(self.queue.current)
             return
         if self.queue.next() is None:
+            self._finished = True
             self.player.stop()
 
     def _cycle_repeat(self) -> None:

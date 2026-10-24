@@ -336,6 +336,9 @@ class LibraryPanel(QWidget):
     #: (respecting the active search/sort) -- paths, then the clicked row's
     #: index within that list.
     play_requested = Signal(list, int)
+    #: Right-click > Play next / Add to queue: the selected paths.
+    queue_next_requested = Signal(list)
+    queue_append_requested = Signal(list)
     #: Emitted right before a write is submitted, so MainWindow can release
     #: a player's lock on any of these paths first (Windows keeps a file
     #: exclusively locked for as long as a QMediaPlayer has it loaded).
@@ -871,6 +874,10 @@ class LibraryPanel(QWidget):
         menu = QMenu(self)
         play_action = menu.addAction("Play")
         play_action.triggered.connect(lambda: self.play_requested.emit(self.all_paths(), index.row()))
+        menu.addAction("Play next").triggered.connect(lambda: self.queue_next_requested.emit(paths))
+        menu.addAction("Add to queue").triggered.connect(
+            lambda: self.queue_append_requested.emit(paths)
+        )
         menu.addSeparator()
 
         add_menu = menu.addMenu("Add to playlist")

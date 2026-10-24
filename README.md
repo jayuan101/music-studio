@@ -14,6 +14,8 @@ out in whatever format you need — at the best quality the source allows.
   their loudness (EBU R128) and tag them. The player then evens out the
   volume from song to song, per track or per album (Preferences → Playback).
   Only tags are written; the audio is never touched.
+- **Queue** — right-click songs for *Play next* or *Add to queue*; they
+  slot in without interrupting what is playing, with shuffle on or off.
 - **Search** YouTube directly from the Download page, and play a result the
   moment it downloads, to decide whether you actually want it.
 - **Import** anything ffmpeg can decode (which is essentially everything).

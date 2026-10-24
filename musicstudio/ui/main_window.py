@@ -235,6 +235,8 @@ class MainWindow(QMainWindow):
         self.library_panel.auto_trim_requested.connect(self._auto_trim_selected)
         self.library_panel.replaygain_requested.connect(self._replaygain_selected)
         self.library_panel.play_requested.connect(self.now_playing_bar.play_queue)
+        self.library_panel.queue_next_requested.connect(self._queue_next)
+        self.library_panel.queue_append_requested.connect(self._queue_append)
         self.library_panel.selection_changed.connect(self._preload_editor)
         self.download_panel.preview_ready.connect(
             lambda path: self.now_playing_bar.play_queue([path], 0)
@@ -497,6 +499,14 @@ class MainWindow(QMainWindow):
             f"Auto-trim: trimmed {len(applied)} of {len(payload)} track(s)"
         )
         self._reindex([o.path for o in applied])
+
+    def _queue_next(self, paths: list[Path]) -> None:
+        self.now_playing_bar.queue_next(paths)
+        self.status_message.setText(f"Playing {len(paths)} song(s) next")
+
+    def _queue_append(self, paths: list[Path]) -> None:
+        self.now_playing_bar.queue_append(paths)
+        self.status_message.setText(f"Added {len(paths)} song(s) to the queue")
 
     def _replaygain_selected(self, paths: list[Path]) -> None:
         if not paths:
