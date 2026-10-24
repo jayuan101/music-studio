@@ -307,6 +307,13 @@ class SettingsPanel(QWidget):
         self.replaygain_preamp.setToolTip("Added to every song's ReplayGain adjustment")
         self.replaygain_preamp.valueChanged.connect(self._save)
 
+        self.lyrics_online = QCheckBox("Show synced lyrics while playing")
+        self.lyrics_online.setToolTip(
+            "Looks each song up on lrclib.net as it starts (artist, title and length "
+            "are sent). Lyrics already stored in a song are always shown."
+        )
+        self.lyrics_online.toggled.connect(self._save)
+
         hint = QLabel(
             "Uses the ReplayGain tags written by “Scan ReplayGain” (right-click "
             "songs in the Library). Songs without them play unchanged. Most songs "
@@ -323,6 +330,7 @@ class SettingsPanel(QWidget):
         form_layout.setSpacing(8)
         form_layout.addRow("ReplayGain", self.replaygain_mode)
         form_layout.addRow("Pre-amp", self.replaygain_preamp)
+        form_layout.addRow("Lyrics", self.lyrics_online)
 
         return card(section_label("Playback"), form, hint)
 
@@ -583,6 +591,7 @@ class SettingsPanel(QWidget):
         index = self.replaygain_mode.findData(s.replaygain_mode)
         self.replaygain_mode.setCurrentIndex(max(0, index))
         self.replaygain_preamp.setValue(s.replaygain_preamp_db)
+        self.lyrics_online.setChecked(s.lyrics_online_enabled)
 
         index = self.download_mode.findData(s.download_mode)
         self.download_mode.setCurrentIndex(max(0, index))
@@ -645,6 +654,7 @@ class SettingsPanel(QWidget):
 
         s.replaygain_mode = self.replaygain_mode.currentData() or "track"
         s.replaygain_preamp_db = self.replaygain_preamp.value()
+        s.lyrics_online_enabled = self.lyrics_online.isChecked()
 
         s.download_mode = self.download_mode.currentData()
         s.download_embed_thumbnail = self.download_thumbnail.isChecked()

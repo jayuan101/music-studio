@@ -28,6 +28,7 @@ from ..core import artwork as artwork_module
 from ..core import authenticity as authenticity_module
 from ..core import autotrim as autotrim_module
 from ..core import ffmpeg
+from ..core import lyrics as lyrics_module
 from ..core import replaygain
 from ..core import tag_fix as tag_fix_module
 from ..core import ytmusic as ytmusic_module
@@ -236,6 +237,7 @@ class MainWindow(QMainWindow):
         self.library_panel.auto_trim_requested.connect(self._auto_trim_selected)
         self.library_panel.replaygain_requested.connect(self._replaygain_selected)
         self.library_panel.authenticity_requested.connect(self._check_authenticity)
+        self.library_panel.lyrics_requested.connect(self._download_lyrics)
         self.library_panel.play_requested.connect(self.now_playing_bar.play_queue)
         self.library_panel.queue_next_requested.connect(self._queue_next)
         self.library_panel.queue_append_requested.connect(self._queue_append)
@@ -358,6 +360,7 @@ class MainWindow(QMainWindow):
         self.assistant_panel.refresh_settings()
         # ReplayGain mode/pre-amp: re-level the song that is playing now.
         self.now_playing_bar.apply_replaygain()
+        self.now_playing_bar.refresh_lyrics()
 
     # -- actions --------------------------------------------------------
     def _update_artwork(self, paths: list[Path]) -> None:
@@ -501,6 +504,37 @@ class MainWindow(QMainWindow):
             f"Auto-trim: trimmed {len(applied)} of {len(payload)} track(s)"
         )
         self._reindex([o.path for o in applied])
+
+    def _download_lyrics(self, paths: list[Path]) -> None:
+        if not paths:
+            self.status_message.setText("Nothing selected to fetch lyrics for")
+            return
+        # Writes into the files, and one may be loaded in the player.
+        self._release_file_locks(paths)
+
+        def work(context, targets):
+            return lyrics_module.download_library(targets, library=self.library, context=context)
+
+        job = self.jobs.submit_func(
+            f"Downloading lyrics for {len(paths)} track(s)", work, paths, category="lyrics"
+        )
+        job.signals.finished.connect(self._on_lyrics_downloaded)
+
+    def _on_lyrics_downloaded(self, _job_id: str, state: str, payload) -> None:
+        self.library_panel.refresh()
+        if state != "succeeded":
+            self.status_message.setText(f"Lyrics download failed: {payload}")
+            return
+        parts = [f"{len(payload.synced)} synced"]
+        if payload.plain_only:
+            parts.append(f"{len(payload.plain_only)} plain text only")
+        if payload.missing:
+            parts.append(f"{len(payload.missing)} not found")
+        if payload.skipped:
+            parts.append(f"{len(payload.skipped)} already had them")
+        if payload.failed:
+            parts.append(f"{len(payload.failed)} failed ({payload.failed[0][1]})")
+        self.status_message.setText("Lyrics: " + ", ".join(parts))
 
     def _check_authenticity(self, paths: list[Path]) -> None:
         if not paths:

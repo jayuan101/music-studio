@@ -344,6 +344,7 @@ class LibraryPanel(QWidget):
     auto_trim_requested = Signal(list)
     replaygain_requested = Signal(list)
     authenticity_requested = Signal(list)
+    lyrics_requested = Signal(list)
     #: Double-click: play this track, queuing every track currently visible
     #: (respecting the active search/sort) -- paths, then the clicked row's
     #: index within that list.
@@ -945,6 +946,11 @@ class LibraryPanel(QWidget):
             "audio is not changed."
         )
         replaygain_action.triggered.connect(lambda: self.replaygain_requested.emit(paths))
+        lyrics_action = menu.addAction("Download lyrics")
+        lyrics_action.setToolTip(
+            "Fetch synced lyrics from lrclib.net and store them in the songs' files."
+        )
+        lyrics_action.triggered.connect(lambda: self.lyrics_requested.emit(paths))
         authenticity_action = menu.addAction("Check if truly lossless")
         authenticity_action.setToolTip(
             "Flags lossless files that look transcoded from MP3/AAC. A guess from "

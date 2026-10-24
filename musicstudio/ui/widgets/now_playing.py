@@ -16,16 +16,63 @@ from pathlib import Path
 
 from PySide6.QtCore import QObject, Qt, Signal
 from PySide6.QtGui import QPixmap
-from PySide6.QtWidgets import QHBoxLayout, QLabel, QPushButton, QStyle, QVBoxLayout, QWidget
+from PySide6.QtWidgets import (
+    QHBoxLayout,
+    QLabel,
+    QPushButton,
+    QSizePolicy,
+    QStyle,
+    QVBoxLayout,
+    QWidget,
+)
 
 from ...config import get_settings
+from ...core import lyrics as lyrics_module
 from ...core import replaygain
 from .. import theme
 from ..common import safe_pixmap
 from .async_read import AsyncTagReader
+from .lyrics_fetch import LyricsFetcher
 from .player import Player
 
 THUMBNAIL_SIZE = 42
+
+
+class _ElidedLabel(QLabel):
+    """A one-line label that shortens long text with "..." instead of demanding
+    the width -- a long lyric line must not widen the whole window.
+
+    Use :meth:`set_full_text`; the shortened text is what QLabel itself holds,
+    so the stylesheet's colour and font apply as usual.
+    """
+
+    def __init__(self, parent: QWidget | None = None) -> None:
+        super().__init__(parent)
+        self._full_text = ""
+        self.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Preferred)
+        self.setAlignment(Qt.AlignCenter)
+
+    def minimumSizeHint(self):  # noqa: N802 (Qt API)
+        hint = super().minimumSizeHint()
+        hint.setWidth(0)
+        return hint
+
+    def set_full_text(self, text: str) -> None:
+        self._full_text = text
+        self._elide()
+
+    @property
+    def full_text(self) -> str:
+        return self._full_text
+
+    def _elide(self) -> None:
+        self.setText(
+            self.fontMetrics().elidedText(self._full_text, Qt.ElideRight, max(0, self.width() - 4))
+        )
+
+    def resizeEvent(self, event) -> None:  # noqa: N802 (Qt API)
+        super().resizeEvent(event)
+        self._elide()
 
 
 class RepeatMode(str, Enum):
@@ -201,6 +248,14 @@ class NowPlayingBar(QWidget):
         self.library = library
         #: The queue ran out and playback stopped; see _resume_if_finished.
         self._finished = False
+        #: Synced lyrics for the current song, and which line is showing.
+        self._lyrics: lyrics_module.SyncedLyrics | None = None
+        self._lyric_index = -2
+        self._lyrics_token = 0
+        self._current_info = None
+        self._current_path: Path | None = None
+        self._lyrics_fetcher = LyricsFetcher(self)
+        self._lyrics_fetcher.ready.connect(self._on_lyrics_ready)
         self.queue = PlaybackQueue(self)
         self.player = Player()
         # Track info is read off the GUI thread; see AsyncTagReader. No debounce
@@ -215,6 +270,7 @@ class NowPlayingBar(QWidget):
         self.player.play_requested.connect(self.player.play)
         self.player.playing_changed.connect(self.playing_changed)
         self.player.finished.connect(self._on_finished)
+        self.player.position_changed.connect(self._on_position)
 
     # -- construction -----------------------------------------------------
     def _build(self) -> None:
@@ -222,8 +278,21 @@ class NowPlayingBar(QWidget):
         self.setStyleSheet(
             f"#NowPlayingBar {{ background: {theme.BG_DEEP}; border-top: 1px solid {theme.BORDER}; }}"
         )
-        layout = QHBoxLayout(self)
-        layout.setContentsMargins(14, 10, 14, 10)
+        outer = QVBoxLayout(self)
+        outer.setContentsMargins(14, 8, 14, 10)
+        outer.setSpacing(4)
+
+        # One lyric line above the transport, spanning the full width. Hidden
+        # (and so taking no room) unless the current song has synced lyrics.
+        self.lyric_label = _ElidedLabel()
+        self.lyric_label.setStyleSheet(f"color: {theme.TEXT}; font-size: 13px;")
+        self.lyric_label.setVisible(False)
+        outer.addWidget(self.lyric_label)
+
+        row = QWidget()
+        outer.addWidget(row)
+        layout = QHBoxLayout(row)
+        layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(12)
 
         self.art_label = QLabel()
@@ -310,6 +379,9 @@ class NowPlayingBar(QWidget):
 
     def _on_current_changed(self, path: object) -> None:
         track = Path(path) if path else None
+        self._set_lyrics(None)
+        self._lyrics_fetcher.cancel()
+        self._current_info = None
         if track is None:
             self.player.clear()
             self.title_label.setText("Nothing playing")
@@ -353,7 +425,57 @@ class NowPlayingBar(QWidget):
             )
         self.player.set_gain_db(gain)
 
+    # -- lyrics -------------------------------------------------------------
+    def _set_lyrics(self, synced: lyrics_module.SyncedLyrics | None) -> None:
+        self._lyrics = synced
+        self._lyric_index = -2
+        self.lyric_label.set_full_text("")
+        self.lyric_label.setVisible(synced is not None)
+
+    def _load_lyrics(self, path: Path, info) -> None:
+        """Pick lyrics for the current song: embedded synced lyrics first,
+        then (only if the user opted in) LRCLIB via the cache. Never writes
+        to the file -- Windows has it locked while it plays."""
+        self._current_info, self._current_path = info, path
+        if info is None:
+            return
+        embedded = lyrics_module.SyncedLyrics.from_text(info.lyrics or "")
+        if embedded is not None:
+            self._set_lyrics(embedded)
+            return
+        artist = info.artist or info.albumartist
+        if not (get_settings().lyrics_online_enabled and artist and info.title):
+            return
+        row = self.library.get(path) if self.library is not None else None
+        duration = row.duration if row is not None else 0.0
+        self._lyrics_token = self._lyrics_fetcher.request(artist, info.title, info.album, duration)
+
+    def refresh_lyrics(self) -> None:
+        """Re-evaluate lyrics for the current song (the preference changed)."""
+        if self._lyrics is None and self._current_info is not None:
+            self._load_lyrics(self._current_path, self._current_info)
+        elif self._lyrics is not None and not get_settings().lyrics_online_enabled:
+            # Only lyrics that came from the network are switched off with it.
+            if not lyrics_module.is_synced(getattr(self._current_info, "lyrics", "") or ""):
+                self._set_lyrics(None)
+
+    def _on_lyrics_ready(self, token: int, result) -> None:
+        if token != self._lyrics_token or result is None or not result.synced:
+            return
+        synced = lyrics_module.SyncedLyrics.from_text(result.synced)
+        if synced is not None:
+            self._set_lyrics(synced)
+
+    def _on_position(self, seconds: float) -> None:
+        if self._lyrics is None:
+            return
+        index = self._lyrics.index_at(seconds)
+        if index != self._lyric_index:
+            self._lyric_index = index
+            self.lyric_label.set_full_text(self._lyrics.lines[index][1] if index >= 0 else "")
+
     def _apply_track_info(self, path: Path, info) -> None:
+        self._load_lyrics(path, info)
         if info is None:
             self.title_label.setText(path.stem)
             self.artist_label.setText("")

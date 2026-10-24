@@ -23,6 +23,11 @@ out in whatever format you need — at the best quality the source allows.
   mark of an MP3/AAC source: lossless in name only. It is a guess from the
   audio, not proof, and it never reports a cutoff near 20 kHz, which is
   normal for CD masters.
+- **Synced lyrics** — right-click songs and choose *Download lyrics* to store
+  time-stamped lyrics from LRCLIB inside the files; the player then shows the
+  current line above the transport. Turn on *Show synced lyrics while
+  playing* in Preferences to look songs up as they play (it sends the
+  artist, title and length to lrclib.net, so it is off by default).
 - **Search** YouTube directly from the Download page, and play a result the
   moment it downloads, to decide whether you actually want it.
 - **Import** anything ffmpeg can decode (which is essentially everything).

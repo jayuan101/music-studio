@@ -908,9 +908,11 @@ def write_fields(
     normalises the file on the way (ID3 to v2.3, an MP4 compilation flag,
     FLAC pictures), which is right for the Tags page but too much to do to a
     whole library as a side effect. Only fields with a free-text key in
-    every container are accepted -- see ``ID3_TXXX_MAP``.
+    every container are accepted -- see ``ID3_TXXX_MAP`` -- plus ``lyrics``,
+    which each container keeps in its own lyrics field (ID3 USLT, Vorbis
+    LYRICS, MP4 ``\xa9lyr``, ASF WM/Lyrics).
     """
-    unknown = set(fields) - set(ID3_TXXX_MAP)
+    unknown = set(fields) - set(ID3_TXXX_MAP) - {"lyrics"}
     if unknown:
         raise ValueError(f"write_fields() cannot write {', '.join(sorted(unknown))}")
     _retry_on_lock(lambda: _write_fields_once(Path(path), fields), attempts, delay_s)
@@ -937,6 +939,11 @@ def _write_fields_once(path: Path, fields: dict[str, str]) -> None:
             from mutagen.mp4 import MP4FreeForm
 
             for name, value in fields.items():
+                if name == "lyrics":
+                    _discard(container, "\xa9lyr")
+                    if value:
+                        container["\xa9lyr"] = [value]
+                    continue
                 key = f"----:com.apple.iTunes:{MP4_FREEFORM_MAP[name]}"
                 _discard(container, key)
                 if value:
@@ -947,7 +954,14 @@ def _write_fields_once(path: Path, fields: dict[str, str]) -> None:
                 if value:
                     container[ASF_MAP[name]] = [ASFUnicodeAttribute(value)]
         elif isinstance(audio, (MP3, AIFF, WAVE)):
+            from mutagen.id3 import USLT
+
             for name, value in fields.items():
+                if name == "lyrics":
+                    container.delall("USLT")
+                    if value:
+                        container.add(USLT(encoding=3, lang="eng", desc="", text=value))
+                    continue
                 _set_txxx(container, ID3_TXXX_MAP[name], value)
             # Keep whichever ID3 version the file already had.
             version = container.version[1] if container.version[1] in (3, 4) else 3

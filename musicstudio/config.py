@@ -169,6 +169,10 @@ class Settings:
     replaygain_mode: str = "track"
     #: Added to every ReplayGain adjustment, in dB.
     replaygain_preamp_db: float = 0.0
+    #: While playing, look each song up on lrclib.net for synced lyrics. Off by
+    #: default: it sends the song's artist, title and length to that service.
+    #: (The Library's explicit "Download lyrics" action ignores this.)
+    lyrics_online_enabled: bool = False
 
     # -- UI -------------------------------------------------------------
     theme: str = "dark"
