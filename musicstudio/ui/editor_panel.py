@@ -806,7 +806,7 @@ class EditorPanel(QWidget):
             self,
             "Save in place",
             f"Apply these edits to \"{self._path.name}\" and overwrite it?\n\n"
-            "This replaces the file in your library. The original audio is not kept.",
+            "This replaces the file in your library. The original audio is backed up for Undo last change in Library.",
             QMessageBox.Yes | QMessageBox.Cancel,
             QMessageBox.Cancel,
         )
@@ -849,7 +849,7 @@ class EditorPanel(QWidget):
             return source
 
         job = self.jobs.submit_func(
-            f"Saving {source.name}", work, source, spec, profile, category="export"
+            f"Saving {source.name}", work, source, spec, profile, category="export", undo_paths=[source]
         )
         job.signals.finished.connect(self._on_saved_in_place)
 

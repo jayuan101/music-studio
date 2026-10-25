@@ -457,6 +457,10 @@ class LibraryPanel(QWidget):
         remove_missing = QPushButton("Remove missing")
         remove_missing.setToolTip("Drop library entries whose files no longer exist")
         remove_missing.clicked.connect(self.remove_missing)
+        undo = QPushButton("Undo last change")
+        undo.clicked.connect(self._undo_last_change)
+        relink = QPushButton("Relink missing…")
+        relink.clicked.connect(self._relink_missing)
 
         find_duplicates = QPushButton("Find duplicates…")
         find_duplicates.setToolTip(
@@ -485,7 +489,7 @@ class LibraryPanel(QWidget):
         # Search gets its own full-width line; sharing a row with six buttons
         # it was squeezed down to "Se...". The buttons wrap as width allows.
         layout.addWidget(self.search_box)
-        layout.addWidget(flow(add_files, add_folder, rescan, remove_missing,
+        layout.addWidget(flow(add_files, add_folder, rescan, remove_missing, undo, relink,
                               find_duplicates, self.auto_trim_all_button,
                               self.check_lossless_button))
 
@@ -1354,7 +1358,8 @@ class LibraryPanel(QWidget):
 
         def work(context, targets):
             imported, skipped = scan_into_library(self.library, targets, context=context)
-            removed = self.library.prune_missing()
+            # Offline storage is not evidence that the user deleted their music.
+            removed = 0
             return imported, skipped, removed
 
         job = self.jobs.submit_func(
@@ -1483,7 +1488,7 @@ class LibraryPanel(QWidget):
             )
 
         job = self.jobs.submit_func(
-            f"Auto-trimming {len(paths)} track(s)", work, paths, category="autotrim"
+            f"Auto-trimming {len(paths)} track(s)", work, paths, category="autotrim", undo_paths=paths
         )
         job.signals.finished.connect(self._on_auto_trim_finished)
 
@@ -1504,12 +1509,74 @@ class LibraryPanel(QWidget):
             )
             job.signals.finished.connect(lambda *_: self.refresh())
 
+    def _undo_last_change(self) -> None:
+        from ..core import history
+        item = history.latest()
+        if item is None:
+            self.status_label.setText("No completed changes available to undo")
+            return
+        _manifest, record = item
+        if QMessageBox.question(self, "Undo last change", f"Undo {record['title']}?\nFiles changed since the operation will be skipped.", QMessageBox.Yes | QMessageBox.Cancel, QMessageBox.Cancel) != QMessageBox.Yes:
+            return
+        self.about_to_write.emit([Path(e["current"]) for e in record["entries"]])
+
+        def work(context):
+            restored, failed = history.undo_latest(self.library, expected=_manifest)
+            scan_into_library(self.library, restored, context=context, force=True)
+            return restored, failed
+
+        job = self.jobs.submit_func("Undo last change", work, category="library")
+        job.signals.finished.connect(self._on_repair_finished)
+
+    def _relink_missing(self) -> None:
+        from ..core import relink
+        folder = QFileDialog.getExistingDirectory(self, "Find missing music in this folder")
+        if not folder:
+            return
+        def work(context):
+            return relink.find_candidates(self.library, Path(folder), context)
+        job = self.jobs.submit_func("Finding missing music", work, category="library")
+        job.signals.finished.connect(self._on_relink_found)
+
+    def _on_relink_found(self, _id, state, payload) -> None:
+        from ..core import relink
+        if state != "succeeded":
+            self.status_label.setText(f"Relink scan failed: {payload}")
+            return
+        proposals, unresolved = payload
+        if not proposals:
+            self.status_label.setText(f"No unique matches found; {len(unresolved)} unresolved")
+            return
+        box = QMessageBox(self)
+        box.setWindowTitle("Review replacement files")
+        box.setText(f"Relink {len(proposals)} tracks? {len(unresolved)} remain unresolved.")
+        box.setInformativeText("Candidates match filename, size, codec and duration. Review the paths before applying. Audio files will not be moved or changed.")
+        box.setDetailedText("\n".join(f"{old}\n → {new}" for old, new in proposals))
+        box.setStandardButtons(QMessageBox.Apply | QMessageBox.Cancel)
+        box.setDefaultButton(QMessageBox.Cancel)
+        if box.exec() != QMessageBox.Apply:
+            return
+        def work(context):
+            return relink.apply(self.library, proposals, context)
+        job = self.jobs.submit_func("Relinking music", work, category="library")
+        job.signals.finished.connect(self._on_repair_finished)
+
+    def _on_repair_finished(self, _id, state, payload) -> None:
+        self.refresh()
+        if state == "succeeded":
+            restored, failed = payload
+            self.status_label.setText(f"Updated {len(restored)} tracks. " + "; ".join(failed))
+        else:
+            self.status_label.setText(f"Operation failed: {payload}")
+
     def remove_missing(self) -> None:
         """Drop rows whose files are no longer on disk."""
         # One stat per indexed track. Fast on a healthy local disk, but the
         # reason tracks go missing in the first place is usually storage that
         # is *not* healthy -- a removable drive, a network share -- where each
         # stat can hang. That is precisely when the window must stay alive.
+        if QMessageBox.question(self, "Remove missing entries", "Remove all missing tracks from the library and playlists?\n\nReconnect external drives first, or use Relink missing to repair paths.", QMessageBox.Yes | QMessageBox.Cancel, QMessageBox.Cancel) != QMessageBox.Yes:
+            return
         self.status_label.setText("Checking which files are still on disk…")
 
         def work(_context):

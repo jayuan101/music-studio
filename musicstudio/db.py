@@ -561,6 +561,18 @@ class Library:
                 (state, cutoff_hz, str(Path(path).resolve())),
             )
 
+    def relocate(self, old_path: Path, new_path: Path) -> bool:
+        """Update a moved file's path while preserving its ID and playlists."""
+        new_path = Path(new_path).resolve()
+        conn = self._connect()
+        with conn:
+            cursor = conn.execute(
+                "UPDATE tracks SET path = ?, filename = ? WHERE path IN (?, ?)",
+                (str(new_path), new_path.name,
+                 str(Path(old_path).resolve()), str(Path(old_path))),
+            )
+        return cursor.rowcount > 0
+
     def remove(self, path: Path) -> bool:
         """Drop ``path``'s row under either spelling. True if one was removed."""
         conn = self._connect()

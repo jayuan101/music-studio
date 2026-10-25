@@ -58,6 +58,8 @@ class JobRow(QWidget):
         self.cancel_button.setFixedSize(22, 22)
         self.cancel_button.setToolTip("Cancel this job")
         self.cancel_button.clicked.connect(lambda: self.queue.cancel(self.job.id))
+        self.retry_button = QPushButton("Retry failed items")
+        self.retry_button.clicked.connect(lambda: self.queue.retry(self.job.id))
 
         header = QHBoxLayout()
         header.setContentsMargins(0, 0, 0, 0)
@@ -65,6 +67,7 @@ class JobRow(QWidget):
         header.addWidget(self.title_label, 1)
         header.addWidget(self.state_label)
         header.addWidget(self.cancel_button)
+        header.addWidget(self.retry_button)
         layout.addLayout(header)
 
         self.progress = QProgressBar()
@@ -89,6 +92,7 @@ class JobRow(QWidget):
         self.state_label.setText(_STATE_TEXT[job.state])
         self.state_label.setStyleSheet(f"color: {_STATE_COLOUR[job.state]}; font-size: 11px;")
         self.cancel_button.setVisible(not job.state.is_finished)
+        self.retry_button.setVisible(job.state.is_finished and job.retry_action is not None and not job.retry_started)
 
         if job.state.is_finished:
             self.progress.setRange(0, 100)
@@ -206,6 +210,8 @@ class JobsDock(QDockWidget):
 
     def _update_summary(self) -> None:
         self._drop_orphaned_rows()
+        for row in self._rows.values():
+            row.refresh()
         active = self.queue.active_count()
         total = len(self._rows)
         if active:

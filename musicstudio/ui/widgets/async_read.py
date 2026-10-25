@@ -168,6 +168,7 @@ class AsyncFileReader(QObject):
         self._timer.stop()
         self._token += 1
         self._pending = None
+        self._pool.clear()
 
     def invalidate(self, path: Path) -> None:
         """Forget any cached read for ``path``.

@@ -14,11 +14,8 @@ directory, relaunches the app, then deletes itself and the download.
 
 from __future__ import annotations
 
-import os
-import subprocess
 import sys
 import tempfile
-import zipfile
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -81,23 +78,35 @@ def check_for_update(*, timeout: float = 10.0) -> UpdateInfo | None:
     except (httpx.HTTPError, ValueError):
         return None
 
+    if not isinstance(data, dict):
+        return None
     tag = data.get("tag_name", "")
-    if not tag or _parse_version(tag) <= _parse_version(__version__):
+    if not isinstance(tag, str) or not tag or _parse_version(tag) <= _parse_version(__version__):
+        return None
+    assets = data.get("assets", [])
+    if not isinstance(assets, list):
         return None
 
     asset = next(
-        (a for a in data.get("assets", []) if a.get("name", "").lower().endswith(".zip")),
+        (a for a in assets
+         if isinstance(a, dict)
+         and isinstance(a.get("name"), str)
+         and a["name"].lower().endswith(".zip")
+         and isinstance(a.get("browser_download_url"), str)
+         and a["browser_download_url"].startswith("https://")),
         None,
     )
     if asset is None:
         return None
 
+    notes = data.get("body")
+    size = asset.get("size", 0)
     return UpdateInfo(
         version=tag.lstrip("vV"),
         tag=tag,
-        notes=(data.get("body") or "").strip(),
+        notes=notes.strip() if isinstance(notes, str) else "",
         download_url=asset["browser_download_url"],
-        size=asset.get("size", 0),
+        size=size if type(size) is int and size >= 0 else 0,
     )
 
 
@@ -113,6 +122,8 @@ def download_update(info: UpdateInfo, *, context=None) -> Path:
             written = 0
             with open(dest, "wb") as f:
                 for chunk in response.iter_bytes(chunk_size=1 << 20):
+                    if context is not None:
+                        context.raise_if_cancelled()
                     f.write(chunk)
                     written += len(chunk)
                     if context is not None:
@@ -120,87 +131,14 @@ def download_update(info: UpdateInfo, *, context=None) -> Path:
                         context.progress(
                             written / total if total else None, "Downloading update…"
                         )
+            if total and written != total:
+                raise ValueError("Update download is incomplete; please retry")
     return dest
 
 
 def apply_update(zip_path: Path) -> None:
-    """Extract the downloaded release and hand off to a helper script that
-    swaps it in once this process exits, then relaunches the app.
-
-    Does not itself exit the process -- the caller must do that (e.g. via
-    QApplication.quit()) once this returns, or the helper will just wait.
-    """
+    """Validate, back up, install, and roll back if copying or startup fails."""
     if not is_frozen():
         raise RuntimeError("Updating only applies to the packaged app, not a source checkout")
-
-    target_dir = install_dir()
-    extract_dir = zip_path.parent / "extracted"
-    with zipfile.ZipFile(zip_path) as zf:
-        zf.extractall(extract_dir)
-
-    exe_path = target_dir / Path(sys.executable).name
-    helper = zip_path.parent / "apply_update.bat"
-    log_path = zip_path.parent / "robocopy.log"
-    steps_log = zip_path.parent / "apply_update.log"
-    helper.write_text(
-        "@echo off\r\n"
-        f'set "PID={os.getpid()}"\r\n'
-        f'set "STEPLOG={steps_log}"\r\n'
-        f'echo Waiting for PID %PID% to exit... > "%STEPLOG%"\r\n'
-        # Matches on IMAGENAME too, not just PID -- a bare PID filter would
-        # wait forever if this PID happens to be reused by an unrelated,
-        # longer-lived process before this check runs.
-        ":wait\r\n"
-        'tasklist /FI "PID eq %PID%" /FI "IMAGENAME eq MusicStudio.exe" 2^>nul | find "%PID%" >nul\r\n'
-        "if not errorlevel 1 (\r\n"
-        "  timeout /t 1 /nobreak >nul\r\n"
-        "  goto wait\r\n"
-        ")\r\n"
-        # The process table drops the PID slightly before Windows finishes
-        # releasing the exe/DLL file handles -- copying immediately can hit
-        # a locked file (made worse by antivirus scanning the freshly
-        # written new build). A short grace period avoids that race.
-        "timeout /t 2 /nobreak >nul\r\n"
-        f'echo Copying new build over "{target_dir}"... >> "%STEPLOG%"\r\n'
-        f'robocopy "{extract_dir}" "{target_dir}" /MIR /R:10 /W:2 /LOG:"{log_path}" >nul\r\n'
-        # Robocopy's own exit codes: 0-7 all mean "success" (some
-        # combination of copied/extra/mismatched files); 8+ means at least
-        # one file could not be copied even after the retries above. A
-        # locked exe that never gets copied must not be masked by silently
-        # launching whatever is left in target_dir.
-        "set \"COPY_RESULT=%ERRORLEVEL%\"\r\n"
-        'echo Robocopy exit code: %COPY_RESULT% >> "%STEPLOG%"\r\n'
-        "if %COPY_RESULT% GEQ 8 (\r\n"
-        '  echo Copy failed -- not launching. See robocopy.log next to this file. >> "%STEPLOG%"\r\n'
-        "  goto :eof\r\n"
-        ")\r\n"
-        f'if not exist "{exe_path}" (\r\n'
-        f'  echo "{exe_path}" is missing after copy -- not launching. >> "%STEPLOG%"\r\n'
-        "  goto :eof\r\n"
-        ")\r\n"
-        f'echo Launching "{exe_path}"... >> "%STEPLOG%"\r\n'
-        f'start "" "{exe_path}"\r\n'
-        'echo Launch requested. >> "%STEPLOG%"\r\n'
-        # Give Windows a moment to actually hand off before this script's
-        # own directory (which it is currently executing from) is removed.
-        "timeout /t 3 /nobreak >nul\r\n"
-        f'rmdir /s /q "{zip_path.parent}"\r\n',
-        encoding="utf-8",
-    )
-    subprocess.Popen(
-        ["cmd", "/c", str(helper)],
-        # DETACHED_PROCESS (no console at all) used to be combined with
-        # CREATE_NO_WINDOW here, on the assumption that "more hidden" is
-        # strictly better. It is not: cmd's own `start` builtin -- the line
-        # that actually relaunches the app -- depends on the process having
-        # *a* console object to work from, even a hidden one. Under a fully
-        # console-less DETACHED_PROCESS parent, `start` can silently fail to
-        # create the new process while the rest of the script (a plain
-        # console tool like robocopy) runs fine -- which looked exactly like
-        # "the update installed but the app never reopened". CREATE_NO_WINDOW
-        # alone still hides the window and does not tie the helper's
-        # lifetime to this one (Windows does not kill child processes when
-        # a parent exits), so nothing is lost by dropping DETACHED_PROCESS.
-        creationflags=subprocess.CREATE_NO_WINDOW,
-        close_fds=True,
-    )
+    from .update_install import launch
+    launch(zip_path, install_dir())

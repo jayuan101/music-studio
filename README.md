@@ -10,6 +10,18 @@ out in whatever format you need — at the best quality the source allows.
   playlist that fills itself from rules like "genre contains jazz" or
   "added in the last 30 days". Export any playlist as `.m3u8` for other
   players, phones or car stereos.
+- **Resume your session** — the queue, shuffle/repeat settings and playback
+  position are saved every five seconds and when the window closes. Reopening
+  restores the queue paused, skipping unavailable files.
+- **Recover changes** — supported tag/artwork batches and saved audio edits
+  retain original files. Use **Undo last change** in Library; files changed
+  externally after the operation are skipped. Backups use additional disk space
+  and are retained in the app's data folder under `undo`.
+- **Relink missing…** — choose a folder, review unique replacement candidates,
+  and repair library paths while keeping manual playlists. Automatic rescans
+  preserve missing entries, including tracks on disconnected drives.
+- **Retry failed items** — artwork and metadata batches offer selective retry
+  in Activity when individual files fail, without repeating successful items.
 - **ReplayGain** — right-click songs and choose *Scan ReplayGain* to measure
   their loudness (EBU R128) and tag them. The player then evens out the
   volume from song to song, per track or per album (Preferences → Playback).
@@ -230,6 +242,12 @@ ffmpeg is bundled — there is nothing else to install.
 
 ### Staying up to date
 
+Updates validate the archive before installation and keep a backup of the old
+app. The Windows helper restores that backup if copying fails or the new app
+exits within five seconds of launch. Update backups and logs remain in the
+temporary `musicstudio-update-*` folder for recovery; this does not detect
+problems that occur later in a session.
+
 Preferences → Updates shows the installed version, with a **Check for
 updates** button. It reads this repository's public GitHub Releases — no
 account needed — and if a newer one exists, **Update now** downloads it and
@@ -293,7 +311,7 @@ under `%APPDATA%` and your Music folder rather than inside the install.
 python -m pytest tests -q
 ```
 
-382 tests covering the filter-graph builder, the quality policy, real encodes
+The suite covers the filter-graph builder, the quality policy, real encodes
 into all ten output formats, tag round-trips through every container, the
 four-provider artwork/metadata fallback chain (against mocked HTTP), the
 YouTube Music tag normaliser (including the real edge cases it was built to

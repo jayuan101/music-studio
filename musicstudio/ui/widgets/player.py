@@ -62,6 +62,7 @@ class Player(QWidget):
         #: Offset applied to reported positions, so a rendered excerpt still
         #: reports its true position on the original timeline.
         self._offset = 0.0
+        self._resume_position = None
 
         self._build()
 
@@ -142,7 +143,7 @@ class Player(QWidget):
         self._audio.setVolume(min(1.0, self.volume_slider.value() / 100.0 * self._gain_factor))
 
     # -- loading --------------------------------------------------------
-    def load(self, path: str | Path, *, offset: float = 0.0) -> None:
+    def load(self, path: str | Path, *, offset: float = 0.0, start_position: float | None = None) -> None:
         """Load a file, ready to play.
 
         ``offset`` shifts reported positions, so a rendered excerpt starting at
@@ -150,6 +151,7 @@ class Player(QWidget):
         """
         self._stop_at = None
         self._offset = offset
+        self._resume_position = start_position
         self._player.setSource(QUrl.fromLocalFile(str(Path(path).resolve())))
         self.setEnabled(True)
 
@@ -164,6 +166,7 @@ class Player(QWidget):
         return Path(source.toLocalFile())
 
     def clear(self) -> None:
+        self._resume_position = None
         self._player.stop()
         self._player.setSource(QUrl())
         self.setEnabled(False)
@@ -256,6 +259,10 @@ class Player(QWidget):
         self.status_label.setStyleSheet(f"color: {theme.WARNING};")
 
     def _on_media_status(self, status) -> None:
+        if status in (QMediaPlayer.LoadedMedia, QMediaPlayer.BufferedMedia) and self._resume_position is not None:
+            seconds, self._resume_position = self._resume_position, None
+            # Avoid restoring onto EndOfMedia and immediately advancing the queue.
+            self.seek(min(seconds, max(0, self.duration - 0.25)))
         if status == QMediaPlayer.EndOfMedia:
             self.finished.emit()
 

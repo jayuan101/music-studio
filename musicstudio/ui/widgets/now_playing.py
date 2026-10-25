@@ -11,10 +11,11 @@ pressed play on, rather than letting two files play over each other.
 from __future__ import annotations
 
 import random
+import math
 from enum import Enum
 from pathlib import Path
 
-from PySide6.QtCore import QObject, Qt, Signal
+from PySide6.QtCore import QObject, Qt, Signal, QTimer
 from PySide6.QtGui import QPixmap
 from PySide6.QtWidgets import (
     QHBoxLayout,
@@ -29,6 +30,7 @@ from PySide6.QtWidgets import (
 from ...config import get_settings
 from ...core import lyrics as lyrics_module
 from ...core import replaygain
+from ...core import session
 from .. import theme
 from ..common import safe_pixmap
 from .async_read import AsyncTagReader
@@ -208,6 +210,41 @@ class PlaybackQueue(QObject):
         return len(self._order) - 1 - self._position
 
     # -- moving through it ------------------------------------------------
+    def snapshot(self) -> dict:
+        return {"tracks": [str(p) for p in self._tracks], "order": self._order[:],
+                "position": self._position, "shuffle": self.shuffle,
+                "repeat": self.repeat.value}
+
+    def restore(self, state: dict) -> bool:
+        """Restore exact play order, retaining duplicate entries and skipping missing files."""
+        tracks, order = state.get("tracks"), state.get("order")
+        position = state.get("position")
+        if (not isinstance(tracks, list) or len(tracks) > 100_000
+                or not all(isinstance(p, str) and p for p in tracks)
+                or not isinstance(order, list)
+                or not all(type(i) is int for i in order)
+                or sorted(order) != list(range(len(tracks)))
+                or type(position) is not int or not 0 <= position < len(order)):
+            return False
+        available = {i: Path(p) for i, p in enumerate(tracks) if Path(p).is_file()}
+        kept_order = [i for i in order if i in available]
+        if not kept_order:
+            return False
+        chosen = next((i for i in order[position:] if i in available), kept_order[0])
+        indices = list(available)
+        remap = {old: new for new, old in enumerate(indices)}
+        self._tracks = [available[i] for i in indices]
+        self._order = [remap[i] for i in kept_order]
+        self._position = kept_order.index(chosen)
+        self._shuffle = state.get("shuffle") is True
+        try:
+            self.repeat = RepeatMode(state.get("repeat"))
+        except (ValueError, TypeError):
+            self.repeat = RepeatMode.OFF
+        self.current_changed.emit(self.current)
+        self.queue_changed.emit()
+        return True
+
     def next(self) -> Path | None:
         if not self._order:
             return None
@@ -271,6 +308,37 @@ class NowPlayingBar(QWidget):
         self.player.playing_changed.connect(self.playing_changed)
         self.player.finished.connect(self._on_finished)
         self.player.position_changed.connect(self._on_position)
+        self._session_timer = QTimer(self)
+        self._session_timer.setInterval(5000)
+        self._session_timer.timeout.connect(self.save_session)
+        self._session_timer.start()
+        self.restore_session()
+
+    def save_session(self) -> None:
+        state = self.queue.snapshot()
+        state["seconds"] = self.player.position
+        try:
+            session.save(state)
+        except (OSError, ValueError):
+            pass
+
+    def restore_session(self) -> None:
+        state = session.load()
+        seconds = state.get("seconds", 0)
+        self._resume_seconds = seconds if isinstance(seconds, (int, float)) and math.isfinite(seconds) and seconds >= 0 else 0
+        self._restoring_session = True
+        self._resume_track = None
+        try:
+            self._resume_track = Path(state["tracks"][state["order"][state["position"]]])
+        except (KeyError, IndexError, TypeError, ValueError):
+            pass
+        try:
+            self.queue.restore(state)
+            self.shuffle_button.setChecked(self.queue.shuffle)
+            self.repeat_button.setText({RepeatMode.OFF: "Repeat: Off", RepeatMode.ALL: "Repeat: Queue",
+                                        RepeatMode.ONE: "Repeat: One"}[self.queue.repeat])
+        finally:
+            self._restoring_session = False
 
     # -- construction -----------------------------------------------------
     def _build(self) -> None:
@@ -391,10 +459,14 @@ class NowPlayingBar(QWidget):
             self._update_controls()
             return
 
-        self.player.load(track)
+        if getattr(self, "_restoring_session", False):
+            self.player.load(track, start_position=self._resume_seconds if track == self._resume_track else 0)
+        else:
+            self.player.load(track)
         # Before play(), so a loud track never starts loud for a moment.
         self.apply_replaygain()
-        self.player.play()
+        if not getattr(self, "_restoring_session", False):
+            self.player.play()
 
         # Playback starts immediately; the title, artist and cover art follow
         # when the read lands. Reading them inline here used to stall the whole

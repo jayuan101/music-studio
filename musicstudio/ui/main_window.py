@@ -44,6 +44,7 @@ from .library_view import LibraryPanel
 from .settings_panel import SettingsPanel
 from .tag_panel import TagPanel
 from .widgets.now_playing import NowPlayingBar
+from .change_review import review
 
 #: (label, icon glyph) for each sidebar entry, in order.
 PAGES = [
@@ -369,15 +370,20 @@ class MainWindow(QMainWindow):
             self.status_message.setText("Nothing selected to update")
             return
 
+        if not review(self, "Update artwork", paths, "Look up cover art and replace missing or undersized artwork."):
+            return
+        self._release_file_locks(paths)
+
         def work(context, targets):
             return artwork_module.update_library_artwork(targets, context=context)
 
         job = self.jobs.submit_func(
-            f"Updating artwork for {len(paths)} track(s)", work, paths, category="artwork"
+            f"Updating artwork for {len(paths)} track(s)", work, paths, category="artwork", undo_paths=paths
         )
         job.signals.finished.connect(self._on_artwork_finished)
 
     def _on_artwork_finished(self, _job_id: str, state: str, payload) -> None:
+        self._offer_batch_retry(_job_id, state, payload, self._update_artwork)
         if state != "succeeded":
             self.status_message.setText(f"Artwork update failed: {payload}")
             return
@@ -392,11 +398,15 @@ class MainWindow(QMainWindow):
             self.status_message.setText("Nothing selected to fix")
             return
 
+        if not review(self, "Fix metadata", paths, "Fill blank metadata fields using filenames and online matches. Existing values are kept."):
+            return
+        self._release_file_locks(paths)
+
         def work(context, targets):
             return tag_fix_module.fix_library_tags(targets, context=context)
 
         job = self.jobs.submit_func(
-            f"Fixing metadata for {len(paths)} track(s)", work, paths, category="tags"
+            f"Fixing metadata for {len(paths)} track(s)", work, paths, category="tags", undo_paths=paths
         )
         job.signals.finished.connect(self._on_tags_fixed)
 
@@ -412,7 +422,7 @@ class MainWindow(QMainWindow):
             )
 
         job = self.jobs.submit_func(
-            f"Identifying {len(paths)} track(s) by sound", work, paths, category="tags"
+            f"Identifying {len(paths)} track(s) by sound", work, paths, category="tags", undo_paths=paths
         )
         job.signals.finished.connect(self._on_identified)
 
@@ -429,6 +439,7 @@ class MainWindow(QMainWindow):
         self._reindex([r.path for r in updated])
 
     def _on_tags_fixed(self, _job_id: str, state: str, payload) -> None:
+        self._offer_batch_retry(_job_id, state, payload, self._fix_library_tags)
         if state != "succeeded":
             self.status_message.setText(f"Fix metadata failed: {payload}")
             return
@@ -437,6 +448,20 @@ class MainWindow(QMainWindow):
             f"Fix metadata: updated {len(updated)} of {len(payload)} track(s)"
         )
         self._reindex([r.path for r in updated])
+
+    def _offer_batch_retry(self, job_id, state, results, action) -> None:
+        job = self.jobs.job(job_id)
+        if job is None:
+            return
+        if state == "succeeded":
+            failed = [r.path for r in results if not r.updated and
+                      (r.reason.startswith(("Failed:", "Could not")) or r.reason == "No cover art found")]
+            job.retry_action = (lambda: action(failed)) if failed else None
+        elif state == "failed":
+            # The operation may have written part of its batch before raising.
+            # Do not blindly rerun it; completed results are required for a safe retry.
+            job.retry_action = None
+        self.jobs.queue_changed.emit()
 
     def _format_for_ytmusic(self, paths: list[Path]) -> None:
         if not paths:
@@ -467,7 +492,7 @@ class MainWindow(QMainWindow):
             return snapshot, results
 
         job = self.jobs.submit_func(
-            f"YouTube Music format for {len(paths)} track(s)", work, paths, category="tags"
+            f"YouTube Music format for {len(paths)} track(s)", work, paths, category="tags", undo_paths=paths
         )
         job.signals.finished.connect(self._on_ytmusic_formatted)
 
@@ -501,7 +526,7 @@ class MainWindow(QMainWindow):
             )
 
         job = self.jobs.submit_func(
-            f"Auto-trimming {len(paths)} new track(s)", work, paths, category="autotrim"
+            f"Auto-trimming {len(paths)} new track(s)", work, paths, category="autotrim", undo_paths=paths
         )
         job.signals.finished.connect(self._on_autotrim_finished)
 
@@ -520,7 +545,7 @@ class MainWindow(QMainWindow):
             )
 
         job = self.jobs.submit_func(
-            f"Auto-trimming {len(paths)} track(s)", work, paths, category="autotrim"
+            f"Auto-trimming {len(paths)} track(s)", work, paths, category="autotrim", undo_paths=paths
         )
         job.signals.finished.connect(self._on_autotrim_finished)
 
@@ -545,7 +570,7 @@ class MainWindow(QMainWindow):
             return lyrics_module.download_library(targets, library=self.library, context=context)
 
         job = self.jobs.submit_func(
-            f"Downloading lyrics for {len(paths)} track(s)", work, paths, category="lyrics"
+            f"Downloading lyrics for {len(paths)} track(s)", work, paths, category="lyrics", undo_paths=paths
         )
         job.signals.finished.connect(self._on_lyrics_downloaded)
 
@@ -737,6 +762,7 @@ class MainWindow(QMainWindow):
             pass  # losing the window size must never block closing
 
     def closeEvent(self, event) -> None:
+        self.now_playing_bar.save_session()
         self._save_geometry()
         self.jobs.cancel_all()
         self.jobs.wait_for_done(3000)

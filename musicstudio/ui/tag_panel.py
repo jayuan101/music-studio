@@ -528,6 +528,11 @@ class TagPanel(QWidget):
     def _write_to(self, paths: list[Path], *, shared_only: bool = False) -> None:
         edited = self._collect()
         artwork = self._artwork
+        from .change_review import review
+        fields = ("album", "albumartist", "artist", "date", "genre", "composer", "comment") if shared_only else ("title", "artist", "album", "albumartist", "date", "genre", "composer", "comment", "track_number", "disc_number")
+        summary = "\n".join(f"{name}: {getattr(edited, name)}" for name in fields)
+        if not review(self, "Save tags", paths, summary + ("\nArtwork will be written." if artwork else "")):
+            return
 
         def work(context, targets):
             written = []
@@ -551,7 +556,7 @@ class TagPanel(QWidget):
         self.save_button.setEnabled(False)
         self.save_all_button.setEnabled(False)
         self.about_to_write.emit(paths)
-        job = self.jobs.submit_func(f"Saving tags ({len(paths)})", work, paths, category="tags")
+        job = self.jobs.submit_func(f"Saving tags ({len(paths)})", work, paths, category="tags", undo_paths=paths)
         job.signals.finished.connect(self._on_saved)
 
     def _on_saved(self, _job_id: str, state: str, payload) -> None:
@@ -594,13 +599,18 @@ class TagPanel(QWidget):
             job.signals.finished.connect(self._on_fix_single)
         else:
             paths = list(self._paths)
+            from .change_review import review
+            if not review(self, "Fix metadata", paths, "Fill blank metadata fields from filenames and online matches."):
+                self.fix_button.setEnabled(True)
+                return
+            self.about_to_write.emit(paths)
             self.status_label.setText(f"Fixing metadata for {len(paths)} file(s)…")
 
             def work(context):
                 return tag_fix_module.fix_library_tags(paths, context=context)
 
             job = self.jobs.submit_func(
-                f"Fix metadata ({len(paths)})", work, category="tags"
+                f"Fix metadata ({len(paths)})", work, category="tags", undo_paths=paths
             )
             job.signals.finished.connect(self._on_fix_batch)
 

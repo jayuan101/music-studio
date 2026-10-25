@@ -66,6 +66,9 @@ def test_move_files_relocates_and_reindexes(tmp_path):
     track = make_tone(tmp_path / "source" / "a.flac", duration=1.0)
     T.write(track, T.TagSet(title="Moved Song", artist="Band"))
     scan_into_library(library, [track])
+    playlist = library.create_playlist("Keep my songs")
+    library.add_to_playlist(playlist, [track])
+    original_id = library.get(track).id
 
     destination_dir = tmp_path / "destination"
     result = library_ops.move_files(library, [track], destination_dir)
@@ -80,6 +83,8 @@ def test_move_files_relocates_and_reindexes(tmp_path):
     row = library.get(new_path)
     assert row is not None
     assert row.title == "Moved Song"
+    assert row.id == original_id
+    assert [row.id for row in library.playlist_tracks(playlist)] == [original_id]
 
 
 def test_move_files_avoids_a_name_collision(tmp_path):
@@ -113,6 +118,9 @@ def test_rename_to_tags_renames_in_place_and_reindexes(tmp_path):
     track = make_tone(tmp_path / "Some Downloaded Filename.flac", duration=1.0)
     T.write(track, T.TagSet(title="Midnight Drive", artist="The Rearview"))
     scan_into_library(library, [track])
+    playlist = library.create_playlist("Keep my songs")
+    library.add_to_playlist(playlist, [track])
+    original_id = library.get(track).id
 
     result = library_ops.rename_to_tags(library, [track])
 
@@ -127,6 +135,8 @@ def test_rename_to_tags_renames_in_place_and_reindexes(tmp_path):
     row = library.get(new_path)
     assert row is not None
     assert row.title == "Midnight Drive"
+    assert row.id == original_id
+    assert [row.id for row in library.playlist_tracks(playlist)] == [original_id]
 
 
 def test_rename_to_tags_leaves_an_already_correct_name_alone(tmp_path):

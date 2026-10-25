@@ -94,6 +94,8 @@ class Job(QRunnable):
         self.signals = JobSignals()
         self.context = JobContext()
         self.context._report = self._on_progress
+        self.retry_action = None
+        self.retry_started = False
         self.setAutoDelete(False)  # the queue keeps jobs around for display
 
     # -- progress plumbing ---------------------------------------------
@@ -207,8 +209,15 @@ class JobQueue(QObject):
         func: Callable[..., Any],
         *args: Any,
         category: str = "general",
+        undo_paths: list | None = None,
         **kwargs: Any,
     ) -> Job:
+        if undo_paths:
+            from .history import capture
+            original = func
+            def func(context, *args, **kwargs):
+                with capture(undo_paths, title, context=context):
+                    return original(context, *args, **kwargs)
         return self.submit(Job(title=title, func=func, args=args, kwargs=kwargs, category=category))
 
     # -- relays ---------------------------------------------------------
@@ -252,6 +261,18 @@ class JobQueue(QObject):
         return sum(1 for j in self._jobs.values() if not j.state.is_finished)
 
     # -- control --------------------------------------------------------
+    def retry(self, job_id: str) -> None:
+        job = self.job(job_id)
+        if job is None or not job.state.is_finished or job.retry_started or job.retry_action is None:
+            return
+        job.retry_started = True
+        try:
+            job.retry_action()
+        except Exception:
+            job.retry_started = False
+            raise
+        self.queue_changed.emit()
+
     def cancel(self, job_id: str) -> None:
         job = self._jobs.get(job_id)
         if job is not None:

@@ -35,6 +35,7 @@ from . import organise
 from . import probe
 from . import tags as tags_module
 from .convert import unique_destination
+from .history import capture
 
 
 @dataclass(frozen=True)
@@ -116,11 +117,13 @@ def move_files(library: Library, paths: list[Path], destination_dir: Path) -> Mo
         path = Path(path)
         target = unique_destination(destination_dir / path.name)
         try:
-            shutil.move(str(path), str(target))
+            with capture([path], f"Move {path.name}") as entries:
+                shutil.move(str(path), str(target))
+                entries[0]["current"] = str(target.resolve())
         except OSError as exc:
             failed.append((path, str(exc)))
             continue
-        library.remove(path)
+        library.relocate(path, target)
         info = probe.try_probe(target)
         if info is not None:
             library.upsert(target, info, tags_module.try_read(target))
@@ -164,11 +167,13 @@ def rename_to_tags(
             continue
         target = unique_destination(path.with_name(new_name))
         try:
-            path.rename(target)
+            with capture([path], f"Rename {path.name}") as entries:
+                path.rename(target)
+                entries[0]["current"] = str(target.resolve())
         except OSError as exc:
             failed.append((path, str(exc)))
             continue
-        library.remove(path)
+        library.relocate(path, target)
         info = probe.try_probe(target)
         if info is not None:
             library.upsert(target, info, tags_module.try_read(target))
