@@ -381,6 +381,7 @@ class NowPlayingBar(QWidget):
         track = Path(path) if path else None
         self._set_lyrics(None)
         self._lyrics_fetcher.cancel()
+        self._lyrics_token = 0
         self._current_info = None
         if track is None:
             self.player.clear()
@@ -452,12 +453,14 @@ class NowPlayingBar(QWidget):
 
     def refresh_lyrics(self) -> None:
         """Re-evaluate lyrics for the current song (the preference changed)."""
-        if self._lyrics is None and self._current_info is not None:
-            self._load_lyrics(self._current_path, self._current_info)
-        elif self._lyrics is not None and not get_settings().lyrics_online_enabled:
+        if not get_settings().lyrics_online_enabled:
+            self._lyrics_fetcher.cancel()
+            self._lyrics_token = 0
             # Only lyrics that came from the network are switched off with it.
             if not lyrics_module.is_synced(getattr(self._current_info, "lyrics", "") or ""):
                 self._set_lyrics(None)
+        elif self._lyrics is None and self._current_info is not None:
+            self._load_lyrics(self._current_path, self._current_info)
 
     def _on_lyrics_ready(self, token: int, result) -> None:
         if token != self._lyrics_token or result is None or not result.synced:

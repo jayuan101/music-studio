@@ -47,18 +47,23 @@ class LyricsFetcher(QObject):
     def __init__(self, parent: QObject | None = None) -> None:
         super().__init__(parent)
         self._signals = _Signals(self)
-        self._signals.ready.connect(self.ready)
+        self._signals.ready.connect(self._on_ready)
         self._pool = QThreadPool(self)
         self._pool.setMaxThreadCount(1)
         self._token = 0
 
     def request(self, artist: str, title: str, album: str, duration: float) -> int:
         """Start a lookup; returns the token its result will carry."""
-        self._token += 1
+        self.cancel()
         self._pool.start(_Task(self._token, (artist, title, album, duration), self._signals))
         return self._token
 
     def cancel(self) -> None:
-        """Make any lookup in flight stale. Its result still arrives, but with
-        a token no caller is waiting for."""
+        """Drop queued lookups and discard the result of any running lookup."""
         self._token += 1
+        self._pool.clear()
+
+    @Slot(int, object)
+    def _on_ready(self, token: int, result) -> None:
+        if token == self._token:
+            self.ready.emit(token, result)
