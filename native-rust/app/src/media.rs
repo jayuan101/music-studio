@@ -1,4 +1,4 @@
-use music_studio_native::{audio_extension, export_args, ExportFormat, Track};
+use music_studio_native::{audio_extension, render_args, Edit, ExportFormat, SourceAudio, Track};
 use rodio::{Decoder, Source};
 use std::{fs::{self,File,OpenOptions},path::{Path,PathBuf},time::{Duration,Instant,SystemTime,UNIX_EPOCH}};
 
@@ -27,14 +27,49 @@ pub fn scan(inputs: Vec<PathBuf>) -> Result<(Vec<Track>,usize),String> {
     tracks.sort_by_cached_key(|track|track.title.to_lowercase());Ok((tracks,skipped))
 }
 
-pub fn export(ffmpeg:&Path, source:&Path, root:&Path, format:ExportFormat, start:f64,end:Option<f64>)->Result<PathBuf,String> {
+fn probe(ffprobe:&Path,source:&Path)->Result<SourceAudio,String> {
+    if !source.is_file(){return Err("Source audio file is missing.".into());}
+    if !ffprobe.is_file(){return Err("Keep ffprobe.exe beside the selected ffmpeg.exe so source quality can be checked.".into());}
+    let mut command=std::process::Command::new(ffprobe);
+    command.args(["-v","error","-select_streams","a:0","-show_entries","stream=codec_name,sample_rate,channels,bits_per_sample,bits_per_raw_sample,sample_fmt,duration:format=duration","-of","json","-protocol_whitelist","file","-i"])
+        .arg(source).stdin(std::process::Stdio::null()).stdout(std::process::Stdio::piped()).stderr(std::process::Stdio::null());
+    #[cfg(windows)] {use std::os::windows::process::CommandExt;command.creation_flags(0x08000000);}
+    let mut child=command.spawn().map_err(|error|format!("Could not inspect source audio: {error}"))?;
+    let begin=Instant::now();
+    loop {
+        match child.try_wait(){
+            Ok(Some(_))=>break,
+            Ok(None)=>{},
+            Err(error)=>{let _=child.kill();let _=child.wait();return Err(error.to_string());}
+        }
+        if begin.elapsed()>Duration::from_secs(30){let _=child.kill();let _=child.wait();return Err("Source inspection timed out after 30 seconds.".into());}
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    let output=child.wait_with_output().map_err(|error|error.to_string())?;
+    if !output.status.success(){return Err("FFprobe could not read this local audio source.".into());}
+    let value:serde_json::Value=serde_json::from_slice(&output.stdout).map_err(|_|"Invalid source inspection response.")?;
+    let stream=value.pointer("/streams/0").ok_or("No audio stream found.")?;
+    let number=|key:&str|stream.get(key).and_then(|v|v.as_u64().or_else(||v.as_str()?.parse().ok())).and_then(|n|u32::try_from(n).ok());
+    let sample=stream.get("sample_fmt").and_then(|v|v.as_str()).unwrap_or("");
+    let codec=stream.get("codec_name").and_then(|v|v.as_str()).unwrap_or("");
+    // Lossy decoders also output float; that is not the source's stored precision.
+    let float=(sample.starts_with('f')||sample.starts_with('d'))&&(codec.starts_with("pcm_")||codec=="wavpack");
+    let bits=number("bits_per_raw_sample").filter(|n|*n>0).or_else(||number("bits_per_sample").filter(|n|*n>0))
+        .or(if float {Some(if sample.starts_with('d'){64}else{32})}else{None});
+    let duration_value=|v:Option<&serde_json::Value>|v.and_then(|v|v.as_str()?.parse::<f64>().ok()).filter(|n|n.is_finite()&&*n>0.0);
+    let duration=duration_value(stream.get("duration")).or_else(||duration_value(value.pointer("/format/duration")));
+    Ok(SourceAudio {rate:number("sample_rate").ok_or("Source sample rate is missing.")?,channels:number("channels").ok_or("Source channel count is missing.")?,bits,float,duration})
+}
+
+pub fn export(ffmpeg:&Path, source:&Path, root:&Path, format:ExportFormat, edit:&Edit)->Result<PathBuf,String> {
     if !ffmpeg.is_file() {return Err("Choose the existing ffmpeg.exe in the export panel.".into());}
     fs::create_dir_all(root.join("exports")).map_err(|error|error.to_string())?;
     fs::create_dir_all(root.join("logs")).map_err(|error|error.to_string())?;
     let stamp=SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default().as_nanos();
     let destination=root.join("exports").join(format!("export-{stamp}.{}",format.extension()));
     if destination.exists() {return Err("Export path already exists. Retry to create a new filename.".into());}
-    let args=export_args(source,&destination,format,start,end)?;
+    let audio=probe(&ffmpeg.with_file_name("ffprobe.exe"),source)?;
+    let args=render_args(source,&destination,format,&audio,edit)?;
     let log_path=root.join("logs").join(format!("export-{stamp}.txt"));
     let log=OpenOptions::new().write(true).create_new(true).open(&log_path).map_err(|error|error.to_string())?;
     let mut command=std::process::Command::new(ffmpeg);
