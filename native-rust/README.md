@@ -12,13 +12,13 @@ Library/queue playback, playlists/M3U8, session restore and FFmpeg export copies
 - Local Rust tools/cache: this project's `.tools` folder
 - Temporary files and logs: this project's `.tmp` and `logs` folders
 - Repository: https://github.com/jayuan101/music-studio
-- Branch: `codex/rust-preview-20261106`; source: `native-rust/`
+- Branch: `main`; source: `native-rust/`
 
 The original Windows app and its data remain unchanged. This source folder is synchronized through the connected GitHub API; it is not a local Git checkout.
 
 ## Use
 
-Download **MusicStudio-Rust-windows** from the successful preview build in this app's draft PR, then run `INSTALL.cmd` and select that ZIP. `ci/latest-build.json` pins the verified ZIP's checksum and source revision after the build succeeds. Run `START.cmd` to launch the installed preview.
+Download **MusicStudio-Rust-windows** from the successful preview build in this app's pull request, then run `INSTALL.cmd` and select that ZIP. `ci/latest-build.json` pins the verified ZIP's checksum and source revision after the build succeeds. Run `START.cmd` to launch the installed preview.
 
 For a local build, open `OPEN-PROJECT.cmd`, run `scripts\install-rust.ps1` if needed, then `scripts\build.ps1`. Windows MSVC Build Tools/SDK are required; system-managed prerequisite files can live outside D:. The app and Rust project paths above stay on D:.
 

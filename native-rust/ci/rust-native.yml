@@ -1,15 +1,17 @@
 name: MusicStudio-Rust Windows preview
 
 on:
+  workflow_dispatch:
   pull_request:
-    branches: [codex/rust-standalone-base-20261106]
+    types: [opened, synchronize, reopened, ready_for_review]
+    branches: [main]
     paths: ['native-rust/**', '.github/workflows/rust-native.yml']
 
 permissions:
   contents: read
 
 concurrency:
-  group: rust-native-${{ github.event.pull_request.number }}
+  group: rust-native-${{ github.event.pull_request.number || github.ref }}
   cancel-in-progress: true
 
 jobs:
@@ -58,7 +60,7 @@ jobs:
           cargo --version | Set-Content build-evidence/cargo-version.txt
           Get-ChildItem target/release/*.exe | Get-FileHash -Algorithm SHA256 | Format-Table -AutoSize | Out-String -Width 400 | Set-Content build-evidence/SHA256SUMS.txt
           $binaries = @(Get-ChildItem target/release/*.exe | ForEach-Object { @{ name=$_.Name; sha256=(Get-FileHash -LiteralPath $_.FullName -Algorithm SHA256).Hash; bytes=$_.Length } })
-          @{ formatVersion=1; sourceHead='${{ github.event.pull_request.head.sha }}'; runId='${{ github.run_id }}'; binaries=$binaries } | ConvertTo-Json -Depth 5 | Set-Content build-evidence/artifacts.json
+          @{ formatVersion=1; sourceHead='${{ github.event.pull_request.head.sha || github.sha }}'; runId='${{ github.run_id }}'; binaries=$binaries } | ConvertTo-Json -Depth 5 | Set-Content build-evidence/artifacts.json
       - name: Upload private build artifacts
         uses: actions/upload-artifact@v4
         with:

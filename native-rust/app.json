@@ -2,7 +2,7 @@
   "name": "MusicStudio-Rust",
   "repository": "jayuan101/music-studio",
   "sourceFolder": "native-rust",
-  "branch": "codex/rust-preview-20261106",
+  "branch": "main",
   "executable": "MusicStudio-Rust.exe",
   "dataFolder": "D:\\UserData\\Apps\\MusicStudio-Rust"
 }

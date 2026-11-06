@@ -1,9 +1,9 @@
 # Repository and Windows build
 
 - Repository: https://github.com/jayuan101/music-studio
-- Branch: `codex/rust-preview-20261106`
+- Branch: `main`
 - Source folder: `native-rust/`
-- Draft review: https://github.com/jayuan101/music-studio/pull/1
+- Pull request: https://github.com/jayuan101/music-studio/pull/1
 - Verified Windows build: https://github.com/jayuan101/music-studio/actions/runs/42294475420
 - Download: https://github.com/jayuan101/music-studio/actions/runs/42294475420/artifacts/13541965948
 - Tested source: `d20e01b9de6037b5b27c5a0f2f6b1cc9eecde87e`
