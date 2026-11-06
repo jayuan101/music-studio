@@ -1,16 +1,16 @@
 # Repository and Windows build
 
 - Repository: https://github.com/jayuan101/music-studio
-- Branch: `main`
-- Source folder: `native-rust/`
-- Pull request: https://github.com/jayuan101/music-studio/pull/1
-- Verified Windows build: https://github.com/jayuan101/music-studio/actions/runs/42294475420
-- Download: https://github.com/jayuan101/music-studio/actions/runs/42294475420/artifacts/13541965948
-- Tested source: `d20e01b9de6037b5b27c5a0f2f6b1cc9eecde87e`
-- ZIP SHA-256: `5b35dc8ada829f82569091d9069261efeb34683c9086f9b2c80125106db4e4bc`
-- Artifact expires: 2026-11-07T21:13:40Z; retain your downloaded ZIP on D:.
+- Source: main, native-rust/
+- Pull request: https://github.com/jayuan101/music-studio/pull/2
+- Tested source: 649689a9b333696872e5a84e7cc6c23b1bae18a4
+- Windows build: https://github.com/jayuan101/music-studio/actions/runs/42300899019
+- Download: https://github.com/jayuan101/music-studio/actions/runs/42300899019/artifacts/13544806060
+- ZIP SHA-256: 9271c5755cb21aa54ad0c1735b470f05dfd136bd216c4b9c59212f81a413144f
+- Expires: 2026-12-06T22:00:55Z
 
-The ZIP contains only MusicStudio-Rust.exe, its dependency lockfile, and build evidence. Run INSTALL.cmd in this project to select the ZIP, then START.cmd. The preview has not been installed or interactively tested by this automation session because local downloads/desktop control are unavailable.
+Run UPDATE.cmd to download and install this pinned executable, then close the running Rust app and use START.cmd. INSTALL.cmd also accepts a manually downloaded ZIP. Both verify checksums and build identity. Original apps remain available.
 
-Documentation and artifact metadata commits may follow the tested source revision without changing the executable. Original-feature parity remains incomplete; see the app README.
+This agent has not downloaded, installed or interactively tested this executable. Network restrictions blocked local binary downloads. Offline updater/import tests used synthetic files and never executed or installed an app. Full feature parity remains incomplete; see FEATURE-PARITY.md.
 
+Metadata/test-only commits can follow the source revision used for the executable without changing its Rust runtime.

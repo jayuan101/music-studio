@@ -10,6 +10,8 @@ $gh = Get-Command gh.exe -ErrorAction SilentlyContinue
 if (-not $gh) { throw 'GitHub CLI is required. Install gh and sign in with gh auth login, then run UPDATE.cmd again.' }
 $downloads = Join-Path $project '.tmp\downloads'
 New-Item -ItemType Directory -Path $downloads -Force | Out-Null
+$env:TEMP = Join-Path $project '.tmp'
+$env:TMP = $env:TEMP
 $archive = Join-Path $downloads ($app.name + '-' + [guid]::NewGuid().ToString('N') + '.zip')
 $start = New-Object Diagnostics.ProcessStartInfo
 $start.FileName = $gh.Source

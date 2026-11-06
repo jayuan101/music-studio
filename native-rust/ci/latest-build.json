@@ -1,15 +1,14 @@
 {
   "repository": "jayuan101/music-studio",
-  "sourceHead": "d20e01b9de6037b5b27c5a0f2f6b1cc9eecde87e",
-  "runId": "42294475420",
-  "artifactId": "13541965948",
-  "sha256": "5b35dc8ada829f82569091d9069261efeb34683c9086f9b2c80125106db4e4bc",
-  "bytes": 3120104,
+  "sourceHead": "649689a9b333696872e5a84e7cc6c23b1bae18a4",
+  "runId": "42300899019",
+  "artifactId": "13544806060",
+  "sha256": "9271c5755cb21aa54ad0c1735b470f05dfd136bd216c4b9c59212f81a413144f",
+  "bytes": 3123133,
   "binaryNames": [
     "MusicStudio-Rust.exe"
   ],
-  "runUrl": "https://github.com/jayuan101/music-studio/actions/runs/42294475420",
-  "artifactUrl": "https://github.com/jayuan101/music-studio/actions/runs/42294475420/artifacts/13541965948",
-  "expiresAt": "2026-11-07T21:13:40Z"
+  "runUrl": "https://github.com/jayuan101/music-studio/actions/runs/42300899019",
+  "artifactUrl": "https://github.com/jayuan101/music-studio/actions/runs/42300899019/artifacts/13544806060",
+  "expiresAt": "2026-12-06T22:00:55Z"
 }
-

@@ -1,15 +1,13 @@
 {
-  "state": "standalone-windows-build-passed",
-  "sourceHead": "d20e01b9de6037b5b27c5a0f2f6b1cc9eecde87e",
-  "runId": "42294475420",
-  "testsPassed": 8,
+  "state": "windows-build-passed-local-installation-pending",
+  "sourceHead": "649689a9b333696872e5a84e7cc6c23b1bae18a4",
+  "runId": "42300899019",
+  "testsPassed": 10,
   "releaseBuild": "passed; exactly one app executable",
   "importerChecks": "4 passed",
-  "projectIsolation": "passed; no dependencies on other app projects",
+  "updaterOfflineChecks": "4 passed",
   "interactiveTested": false,
   "installedLocally": false,
   "originalAppModified": false,
-  "knownLimitations": "See README.md and app/README.md",
-  "syntheticFFmpegExport": "passed locally: original hash/sample rate/channels retained, trim duration correct, existing output retained"
+  "featureParity": "Incomplete. See FEATURE-PARITY.md."
 }
-
