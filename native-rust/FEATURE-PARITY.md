@@ -1,0 +1,35 @@
+# Feature parity worklist
+
+Full feature parity is required. These Rust apps remain previews until the missing behavior is implemented, Windows builds pass, and the installed app is exercised. A repository commit alone is not an app update.
+
+Initial audit: 2026-11-06. Compared original README and source/module inventory with Rust source; this is a living checklist, not an exhaustive acceptance result. “Added” means source implementation, not installed or interactively verified.
+
+| Feature | Current status | Original source reference |
+|---|---|---|
+| Playback, queue, repeat and shuffle | Partial: play-next, queue reorder/removal and shuffle-upcoming added; persistent shuffle toggle and periodic autosave pending. | `musicstudio/core/session.py` |
+| Manual/smart playlists, drag reorder and M3U8 | Partial: manual playlists/export; smart rules and playlist reorder missing. | `musicstudio/core/playlist_rules.py; m3u.py` |
+| Library scan, relink missing, health views and authenticity checks | Partial: reference import; missing files retained. Other tools missing. | `musicstudio/core/relink.py; authenticity.py; health_presets.py` |
+| All conversion formats and source precision preservation | Partial: FLAC/MP3 only. | `musicstudio/core/formats.py; convert.py` |
+| Waveform, trim/cut, gain/limiter, normalise, fades, tempo/pitch, EQ, channel mapping | Partial: export trim only. | `musicstudio/core/edit.py` |
+| Independent editor preview and atomic save with undo | Missing; export copies only. | `musicstudio/core/edit.py; history.py` |
+| Tags, provider metadata matching, artwork picker/cache/retry | Missing. | `musicstudio/core/tags.py; tag_fix.py; artwork.py` |
+| YouTube Music tag conventions and library organisation | Missing. | `musicstudio/core/ytmusic.py; organise.py` |
+| ReplayGain scan, tags and playback modes | Missing. | `musicstudio/core/replaygain.py` |
+| Synced LRCLIB lyrics, AcoustID and fpcalc identification | Missing. | `musicstudio/core/lyrics.py; fingerprint.py` |
+| YouTube search, yt-dlp downloads and import conversion | Missing. | `musicstudio/core/download.py` |
+| Ollama/Claude assistant and reviewed actions | Missing. | `musicstudio/core/assistant.py` |
+| Speech tools, Spotify integration and autotrim | Missing; source modules require detailed UI acceptance mapping. | `musicstudio/core/speech.py; spotify.py; autotrim.py` |
+| Job progress/cancellation/retry, preferences and secret storage | Partial: single background import/export only. | `musicstudio/core/jobs.py; secrets.py` |
+| App update download, installation and rollback | Partial: checked ZIP import only. | `musicstudio/core/updater.py; update_install.py` |
+
+## Completion criteria for every row
+
+- Match the original user workflow and failure/recovery behavior.
+- Add appropriate regression tests; test Windows runtime behavior and needed hardware/providers.
+- Push tested source to this app’s repository and build a matching executable.
+- Install that exact verified build under this app’s D: folder and verify START.cmd opens it.
+- Preserve the original app and user data until replacement acceptance.
+
+## Current installation limitation
+
+No Rust compiler is installed locally. The agent terminal could not download build archives due to restricted network access. GitHub CI can compile them, but a successful CI run does not mean the binaries are installed on this PC.

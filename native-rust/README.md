@@ -23,3 +23,7 @@ Download **MusicStudio-Rust-windows** from the successful preview build in this 
 For a local build, open `OPEN-PROJECT.cmd`, run `scripts\install-rust.ps1` if needed, then `scripts\build.ps1`. Windows MSVC Build Tools/SDK are required; system-managed prerequisite files can live outside D:. The app and Rust project paths above stay on D:.
 
 Windows compilation and automated tests do not replace interactive UI/audio/WebView2 testing. These are previews, not full production replacements. See `VALIDATION.json` for the current build status. No live provider credentials or user recordings are used by tests.
+
+Full port work is tracked in [FEATURE-PARITY.md](FEATURE-PARITY.md).
+
+Run UPDATE.cmd to download and install the build pinned in ci/latest-build.json using your authenticated GitHub CLI. This installs the actual executable under this app's dist folder after checksum verification. Close the running Rust app and use START.cmd afterward. Expired pins require refreshed build metadata.

@@ -1,3 +1,4 @@
+mod queue;
 use serde::{Deserialize, Serialize};
 use std::{collections::HashSet, path::{Path, PathBuf}};
 

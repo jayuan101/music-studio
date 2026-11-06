@@ -69,7 +69,7 @@ jobs:
             native-rust/target/release/*.exe
             native-rust/Cargo.lock
             native-rust/build-evidence/**
-          retention-days: 1
+          retention-days: 30
           if-no-files-found: error
       - name: Save Rust build cache
         if: always()

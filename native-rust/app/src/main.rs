@@ -126,7 +126,7 @@ impl Studio {
                 if let Some(sink)=&self.sink {if paused{sink.play();}else{sink.pause();}}
                 else if !self.state.queue.is_empty(){if let Err(error)=self.play_at(self.state.cursor.unwrap_or(0),self.state.position){self.error=Some(error);}}
             }
-            if ui.button("Stop").clicked(){if let Some(sink)=self.sink.take(){sink.stop();}self.state.position=0.0;}
+            if ui.button("Stop").clicked(){if let Some(sink)=self.sink.take(){sink.stop();}self.state.position=0.0;self.state.cursor=None;}
             if ui.button("Next").clicked(){self.advance(true);}
             ui.label("Repeat");ui.selectable_value(&mut self.state.repeat,Repeat::Off,"Off");ui.selectable_value(&mut self.state.repeat,Repeat::All,"Queue");ui.selectable_value(&mut self.state.repeat,Repeat::One,"Track");
             if ui.add(egui::Slider::new(&mut self.state.volume,0.0..=1.0).text("Volume")).changed(){if let Some(sink)=&self.sink{sink.set_volume(self.state.volume);}}
@@ -148,11 +148,35 @@ impl eframe::App for Studio {
         egui::TopBottomPanel::top("heading").show(ctx,|ui|{ui.heading("Music Studio Rust");ui.label("Native preview · library, playlists, playback, and export copies");});
         egui::TopBottomPanel::bottom("transport").show(ctx,|ui|{self.transport(ui);ui.separator();if self.pending.is_some(){ui.spinner();}ui.label(&self.status);if let Some(error)=&self.error{ui.colored_label(egui::Color32::LIGHT_RED,error);}if ui.button("Dismiss error").clicked(){self.error=None;}});
         egui::SidePanel::left("sidebar").default_width(275.0).show(ctx,|ui|{egui::ScrollArea::vertical().show(ui,|ui|self.sidebar(ui));});
+        egui::SidePanel::right("queue").default_width(250.0).show(ctx,|ui|{
+            ui.heading("Play queue");
+            if ui.button("Shuffle upcoming tracks").clicked(){
+                let seed=SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default().as_nanos() as u64;
+                self.state.shuffle_upcoming(seed);
+            }
+            ui.small("Shuffle leaves the current track and played tracks in place.");
+            let mut move_item=None;let mut remove=None;let mut play=None;
+            egui::ScrollArea::vertical().id_salt("queue_scroll").show(ui,|ui|{
+                for (index,path) in self.state.queue.iter().enumerate(){ui.push_id(index,|ui|{
+                    let label=path.file_name().unwrap_or_default().to_string_lossy();
+                    if ui.selectable_label(self.state.cursor==Some(index),label).double_clicked(){play=Some(index);}
+                    ui.horizontal(|ui|{
+                        if ui.add_enabled(index>0,egui::Button::new("Up")).clicked(){move_item=Some((index,index-1));}
+                        if ui.add_enabled(index+1<self.state.queue.len(),egui::Button::new("Down")).clicked(){move_item=Some((index,index+1));}
+                        if ui.add_enabled(self.state.cursor!=Some(index),egui::Button::new("Remove")).clicked(){remove=Some(index);}
+                    });
+                });}
+            });
+            if let Some((from,to))=move_item{self.state.move_queued(from,to);}
+            if let Some(index)=remove{if let Err(error)=self.state.remove_queued(index){self.error=Some(error);}}
+            if let Some(index)=play{if let Err(error)=self.play_at(index,0.0){self.error=Some(error);}}
+        });
         egui::CentralPanel::default().show(ctx,|ui|{
             ui.horizontal(|ui|{ui.label("Search filenames");ui.text_edit_singleline(&mut self.search);});let rows=self.visible();
             ui.horizontal(|ui|{
                 if ui.add_enabled(!rows.is_empty(),egui::Button::new("Play visible tracks")).clicked(){self.play_paths(rows.iter().map(|track|track.path.clone()).collect(),0);}
                 if ui.add_enabled(self.selected.is_some(),egui::Button::new("Add selected to queue")).clicked(){if self.state.queue.len()<20_000{self.state.queue.push(self.selected.clone().unwrap());}}
+                if ui.add_enabled(self.selected.is_some(),egui::Button::new("Play selected next")).clicked(){if let Some(path)=self.selected.clone(){if let Err(error)=self.state.play_next(path){self.error=Some(error);}}}
                 ui.label(format!("{} tracks · {} queued",rows.len(),self.state.queue.len()));
             });ui.separator();
             egui::ScrollArea::vertical().show(ui,|ui|{for (index,track) in rows.iter().enumerate(){ui.horizontal(|ui|{
