@@ -1,3 +1,5 @@
+pub mod render;
+pub use render::{Edit, ExportFormat, SourceAudio, render_args};
 mod queue;
 use serde::{Deserialize, Serialize};
 use std::{collections::HashSet, path::{Path, PathBuf}};
@@ -56,26 +58,11 @@ pub fn playlist_text(paths: &[PathBuf]) -> Result<String, String> {
     } Ok(text)
 }
 
-#[derive(Clone,Copy,PartialEq,Eq)]
-pub enum ExportFormat { Flac, Mp3 }
-impl ExportFormat { pub fn extension(self)->&'static str { if self==Self::Flac {"flac"} else {"mp3"} } }
-pub fn export_args(source:&Path, destination:&Path, format:ExportFormat, start:f64, end:Option<f64>) -> Result<Vec<std::ffi::OsString>,String> {
-    if !start.is_finite() || start<0.0 || end.is_some_and(|end|!end.is_finite() || end<=start) { return Err("Enter a nonnegative start and an end after the start.".into()); }
-    if key(source)==key(destination) { return Err("Export must use a new file, not the source.".into()); }
-    let mut args: Vec<std::ffi::OsString>=["-nostdin","-hide_banner","-loglevel","error","-n","-i"].into_iter().map(Into::into).collect();
-    args.push(source.as_os_str().into());
-    args.extend(["-ss".into(),format!("{start:.6}").into()]);
-    if let Some(end)=end { args.extend(["-t".into(),format!("{:.6}",end-start).into()]); }
-    args.extend(["-map","0:a:0","-vn","-map_metadata","0","-c:a"].into_iter().map(Into::into));
-    match format {
-        ExportFormat::Flac=>args.extend(["flac","-compression_level","8"].into_iter().map(Into::into)),
-        ExportFormat::Mp3=>args.extend(["libmp3lame","-q:a","0"].into_iter().map(Into::into)),
-    }
-    args.push(destination.as_os_str().into());Ok(args)
-}
-
 #[cfg(test)] mod tests {
     use super::*;
+    fn export_args(source:&Path,destination:&Path,format:ExportFormat,start:f64,end:Option<f64>)->Result<Vec<std::ffi::OsString>,String> {
+        render_args(source,destination,format,&SourceAudio {rate:48000,channels:2,bits:Some(24),float:false,duration:Some(10.0)},&Edit {start,end,..Default::default()})
+    }
     #[test] fn queue_ends_wraps_and_repeats_only_when_requested() {
         assert_eq!(next_index(1,2,Repeat::Off,false),None);
         assert_eq!(next_index(1,2,Repeat::All,false),Some(0));
@@ -91,9 +78,9 @@ pub fn export_args(source:&Path, destination:&Path, format:ExportFormat, start:f
     }
     #[test] fn export_uses_separate_arguments_and_never_overwrites() {
         let args=export_args(Path::new(r"D:\songs\a & b.wav"),Path::new(r"D:\exports\new.flac"),ExportFormat::Flac,2.0,Some(5.5)).unwrap();
-        assert!(args.contains(&"-n".into())); assert!(args.contains(&"3.500000".into()));
+        assert!(args.contains(&"-n".into())); assert!(args.iter().any(|arg|arg.to_string_lossy().contains("atrim=start=2.000000:end=5.500000")));
         assert!(args.contains(&std::ffi::OsString::from(r"D:\songs\a & b.wav")));
-        assert!(!args.contains(&"-ar".into()));
+        assert!(args.contains(&"48000".into()));
     }
     #[test] fn invalid_edits_and_source_overwrites_fail() {
         let path=Path::new("song.flac");

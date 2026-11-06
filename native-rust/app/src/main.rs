@@ -1,7 +1,7 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 mod media;
 use eframe::egui;
-use music_studio_native::{next_index, playlist_text, ExportFormat, Playlist, Repeat, Session, Track};
+use music_studio_native::{next_index, playlist_text, Edit, ExportFormat, Playlist, Repeat, Session, Track};
 use rodio::{Decoder, OutputStream, OutputStreamBuilder, Sink, Source};
 use std::{fs::File,path::PathBuf,sync::mpsc::{self,Receiver},time::{Duration,SystemTime,UNIX_EPOCH}};
 
@@ -10,7 +10,7 @@ struct Studio {
     root:PathBuf, state:Session, stream:Option<OutputStream>, sink:Option<Sink>, duration:Option<f64>,
     selected:Option<PathBuf>, playlist:Option<usize>, search:String, playlist_name:String,
     status:String,error:Option<String>,pending:Option<Receiver<Result<Work,String>>>,
-    export_format:ExportFormat,trim_start:f64,trim_end:f64,trim_enabled:bool,
+    export_format:ExportFormat,trim_start:f64,trim_end:f64,trim_enabled:bool,edit:Edit,
 }
 impl Studio {
     fn new()->Self {
@@ -21,7 +21,7 @@ impl Studio {
         if let Err(message)=state.validate() {error=Some(message);state=Session::default();}
         Self {root,state,stream:None,sink:None,duration:None,selected:None,playlist:None,search:String::new(),playlist_name:String::new(),
             status:"Add files or a folder. Saved queues reopen paused.".into(),error,pending:None,
-            export_format:ExportFormat::Flac,trim_start:0.0,trim_end:30.0,trim_enabled:false}
+            export_format:ExportFormat::Flac,trim_start:0.0,trim_end:30.0,trim_enabled:false,edit:Edit::default()}
     }
     fn save(&mut self) -> bool {
         if let Some(sink)=&self.sink {self.state.position=sink.get_pos().as_secs_f64();}
@@ -79,8 +79,8 @@ impl Studio {
     fn export_selected(&mut self) {
         let Some(source)=self.selected.clone() else{return;};
         let ffmpeg=self.state.ffmpeg.clone();let root=self.root.clone();let format=self.export_format;
-        let start=if self.trim_enabled {self.trim_start}else{0.0};let end=self.trim_enabled.then_some(self.trim_end);
-        self.status="Exporting a new copy...".into();self.start_job(move||media::export(&ffmpeg,&source,&root,format,start,end).map(Work::Exported));
+        let mut edit=self.edit.clone();edit.start=if self.trim_enabled {self.trim_start}else{0.0};edit.end=self.trim_enabled.then_some(self.trim_end);
+        self.status="Exporting a new copy...".into();self.start_job(move||media::export(&ffmpeg,&source,&root,format,&edit).map(Work::Exported));
     }
     fn playlist_export(&mut self) {
         let paths=self.playlist.and_then(|index|self.state.playlists.get(index)).map(|list|&list.paths).unwrap_or(&self.state.queue);
@@ -110,13 +110,41 @@ impl Studio {
         if ui.button("Open D: data folder").clicked(){match std::fs::create_dir_all(&self.root).and_then(|_|std::process::Command::new("explorer.exe").arg(&self.root).spawn().map(|_|())){Ok(())=>{},Err(error)=>self.error=Some(error.to_string())}}
         ui.separator();ui.heading("Export selected track");
         ui.add_enabled_ui(self.pending.is_none()&&self.selected.is_some(),|ui|{
-            ui.horizontal(|ui|{ui.selectable_value(&mut self.export_format,ExportFormat::Flac,"FLAC");ui.selectable_value(&mut self.export_format,ExportFormat::Mp3,"MP3 V0");});
+            egui::ComboBox::from_id_salt("format").selected_text(self.export_format.label()).show_ui(ui,|ui|{
+                for format in ExportFormat::ALL {ui.selectable_value(&mut self.export_format,format,format.label());}
+            });
+            if !self.export_format.lossless(){ui.colored_label(egui::Color32::YELLOW,"Lossy output: this encoding discards audio detail.");}
+            ui.collapsing("Audio edits and output quality",|ui|{
+                ui.add(egui::Slider::new(&mut self.edit.gain_db,-60.0..=30.0).text("Gain dB"));
+                ui.checkbox(&mut self.edit.limiter,"Limit peaks after effects (-0.3 dBFS)");
+                if !self.edit.limiter {ui.small("Raw gain may clip. This is a sample-peak limiter, not a true-peak meter.");}
+                ui.checkbox(&mut self.edit.dynamic_normalize,"Dynamic normalization");
+                ui.small("Dynamic normalization is not two-pass EBU R128 loudness normalization.");
+                ui.add(egui::Slider::new(&mut self.edit.tempo,0.5..=2.0).text("Speed (preserve pitch)"));
+                ui.add(egui::Slider::new(&mut self.edit.bass_db,-20.0..=20.0).text("Bass dB"));
+                ui.add(egui::Slider::new(&mut self.edit.treble_db,-20.0..=20.0).text("Treble dB"));
+                ui.horizontal(|ui|{ui.label("Fade in seconds");ui.add(egui::DragValue::new(&mut self.edit.fade_in).range(0.0..=3600.0).speed(0.1));});
+                ui.horizontal(|ui|{ui.label("Fade out seconds");ui.add(egui::DragValue::new(&mut self.edit.fade_out).range(0.0..=3600.0).speed(0.1));});
+                egui::ComboBox::from_id_salt("output_rate").selected_text(if self.edit.rate==0 {"Source rate".into()}else{format!("{} Hz",self.edit.rate)}).show_ui(ui,|ui|{
+                    ui.selectable_value(&mut self.edit.rate,0,"Preserve source rate");
+                    for rate in [8000,16000,22050,24000,32000,44100,48000,88200,96000,192000]{ui.selectable_value(&mut self.edit.rate,rate,format!("{rate} Hz"));}
+                });
+                egui::ComboBox::from_id_salt("output_bits").selected_text(if self.edit.bits==0 {"Source precision".into()}else{format!("{} bit integer",self.edit.bits)}).show_ui(ui,|ui|{
+                    ui.selectable_value(&mut self.edit.bits,0,"Preserve source precision");
+                    for bits in [16,24,32]{ui.selectable_value(&mut self.edit.bits,bits,format!("{bits} bit integer"));}
+                });
+                ui.small("Integer depth applies to lossless output. Lower precision is dithered; lossy sources default to 24 bit. No lost detail is restored.");
+                egui::ComboBox::from_id_salt("output_channels").selected_text(match self.edit.channels{1=>"Mono",2=>"Stereo",_=>"Source channels"}).show_ui(ui,|ui|{
+                    ui.selectable_value(&mut self.edit.channels,0,"Preserve source channels");ui.selectable_value(&mut self.edit.channels,1,"Mono");ui.selectable_value(&mut self.edit.channels,2,"Stereo");
+                });
+                if ui.button("Reset audio edits / quality").clicked(){self.edit=Edit::default();}
+            });
             ui.small("MP3 is lossy. FLAC cannot restore detail missing from a lossy source.");
             ui.checkbox(&mut self.trim_enabled,"Trim exported copy");if self.trim_enabled {ui.horizontal(|ui|{ui.label("Start s");ui.add(egui::DragValue::new(&mut self.trim_start).range(0.0..=86_400.0));});ui.horizontal(|ui|{ui.label("End s");ui.add(egui::DragValue::new(&mut self.trim_end).range(0.0..=86_400.0));});}
             if ui.button("Choose ffmpeg.exe...").clicked(){if let Some(path)=rfd::FileDialog::new().add_filter("FFmpeg executable",&["exe"]).pick_file(){self.state.ffmpeg=path;}}
             if ui.button("Export new file on D:").clicked(){self.export_selected();}
         });
-        ui.small("Advanced editing, tags, artwork, downloads, AI, and updates are not ported yet.");
+        ui.small("Waveform, save-in-place, tags, artwork, downloads, AI and in-app updates remain unfinished. UPDATE.cmd installs tested builds.");
     }
     fn transport(&mut self,ui:&mut egui::Ui) {
         ui.horizontal(|ui|{
