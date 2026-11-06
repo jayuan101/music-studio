@@ -1,0 +1,80 @@
+name: MusicStudio-Rust Windows preview
+
+on:
+  pull_request:
+    branches: [codex/rust-standalone-base-20261106]
+    paths: ['native-rust/**', '.github/workflows/rust-native.yml']
+
+permissions:
+  contents: read
+
+concurrency:
+  group: rust-native-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  windows:
+    runs-on: windows-2022
+    timeout-minutes: 35
+    defaults:
+      run:
+        working-directory: native-rust
+        shell: pwsh
+    steps:
+      - uses: actions/checkout@v4
+      - name: Restore Rust build cache
+        uses: actions/cache/restore@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            native-rust/target
+          key: musicstudio-rust-win-2022-${{ runner.arch }}-${{ hashFiles('native-rust/**/Cargo.toml') }}
+          restore-keys: musicstudio-rust-win-2022-${{ runner.arch }}-
+      - name: Select stable Rust
+        run: |
+          rustup toolchain install stable --profile minimal --component rustfmt,clippy
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          rustup default stable
+      - name: Format and test
+        run: |
+          cargo fmt --all
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          cargo test --workspace --release
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          cargo clippy --workspace --all-targets
+          exit $LASTEXITCODE
+      - name: Build Windows executables
+        run: |
+          cargo build --workspace --release
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          $binaries = @(Get-ChildItem target/release/*.exe)
+          if ($binaries.Count -ne 1 -or $binaries[0].Name -cne 'MusicStudio-Rust.exe') { throw 'Expected only this app executable.' }
+      - name: Package build evidence
+        run: |
+          New-Item -ItemType Directory -Path build-evidence -Force | Out-Null
+          git rev-parse HEAD | Set-Content build-evidence/source-commit.txt
+          rustc --version | Set-Content build-evidence/rustc-version.txt
+          cargo --version | Set-Content build-evidence/cargo-version.txt
+          Get-ChildItem target/release/*.exe | Get-FileHash -Algorithm SHA256 | Format-Table -AutoSize | Out-String -Width 400 | Set-Content build-evidence/SHA256SUMS.txt
+          $binaries = @(Get-ChildItem target/release/*.exe | ForEach-Object { @{ name=$_.Name; sha256=(Get-FileHash -LiteralPath $_.FullName -Algorithm SHA256).Hash; bytes=$_.Length } })
+          @{ formatVersion=1; sourceHead='${{ github.event.pull_request.head.sha }}'; runId='${{ github.run_id }}'; binaries=$binaries } | ConvertTo-Json -Depth 5 | Set-Content build-evidence/artifacts.json
+      - name: Upload private build artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: MusicStudio-Rust-windows
+          path: |
+            native-rust/target/release/*.exe
+            native-rust/Cargo.lock
+            native-rust/build-evidence/**
+          retention-days: 1
+          if-no-files-found: error
+      - name: Save Rust build cache
+        if: always()
+        uses: actions/cache/save@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            native-rust/target
+          key: musicstudio-rust-win-2022-${{ runner.arch }}-${{ hashFiles('native-rust/**/Cargo.toml') }}

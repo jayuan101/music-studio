@@ -1,0 +1,18 @@
+[workspace]
+members = ["app", "crates/app-store"]
+resolver = "2"
+
+[workspace.package]
+edition = "2021"
+version = "0.1.0"
+publish = false
+
+[workspace.dependencies]
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+transcript-store = { package = "app-store", path = "crates/app-store" }
+
+[profile.release]
+lto = "thin"
+codegen-units = 1
+strip = true
