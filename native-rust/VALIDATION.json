@@ -1,13 +1,15 @@
 {
-  "state": "windows-build-passed-local-installation-pending",
-  "sourceHead": "649689a9b333696872e5a84e7cc6c23b1bae18a4",
-  "runId": "42300899019",
-  "testsPassed": 10,
+  "state": "installed-and-launched",
+  "sourceHead": "104f7fc4d57c537cadddf80de9059603a94746a3",
+  "runId": "42305758868",
+  "testsPassed": 12,
   "releaseBuild": "passed; exactly one app executable",
-  "importerChecks": "4 passed",
-  "updaterOfflineChecks": "4 passed",
-  "interactiveTested": false,
-  "installedLocally": false,
+  "installedLocally": true,
+  "launchVerified": true,
   "originalAppModified": false,
-  "featureParity": "Incomplete. See FEATURE-PARITY.md."
+  "featureParity": "Incomplete. See FEATURE-PARITY.md.",
+  "launchDate": "2026-11-06",
+  "launchedFile": "D:\\Projects\\MusicStudio-Rust\\dist\\104f7fc4d57c537cadddf80de9059603a94746a3-run-42305758868\\MusicStudio-Rust.exe",
+  "launchedSha256": "DB0473B2119C68FF85CD5F7D9B84A143443DD592541995FAC236A1CEC55F3D1A",
+  "windowTitle": "Music Studio Rust"
 }

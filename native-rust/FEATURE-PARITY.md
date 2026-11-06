@@ -9,8 +9,8 @@ Initial audit: 2026-11-06. Compared original README and source/module inventory 
 | Playback, queue, repeat and shuffle | Partial: play-next, queue reorder/removal and shuffle-upcoming added; persistent shuffle toggle and periodic autosave pending. | `musicstudio/core/session.py` |
 | Manual/smart playlists, drag reorder and M3U8 | Partial: manual playlists/export; smart rules and playlist reorder missing. | `musicstudio/core/playlist_rules.py; m3u.py` |
 | Library scan, relink missing, health views and authenticity checks | Partial: reference import; missing files retained. Other tools missing. | `musicstudio/core/relink.py; authenticity.py; health_presets.py` |
-| All conversion formats and source precision preservation | Partial: FLAC/MP3 only. | `musicstudio/core/formats.py; convert.py` |
-| Waveform, trim/cut, gain/limiter, normalise, fades, tempo/pitch, EQ, channel mapping | Partial: export trim only. | `musicstudio/core/edit.py` |
+| All conversion formats and source precision preservation | Added for export copies: FLAC, Apple Lossless, WAV, AIFF, WavPack, MP3, AAC, Opus, Vorbis, WMA. Implicit resampling, downmix and precision loss are refused. Every render plan passed against real FFmpeg 9.0, with lossless output decoding to the exact source samples. | `musicstudio/core/formats.py; convert.py` |
+| Waveform, trim/cut, gain/limiter, normalise, fades, tempo/pitch, EQ, channel mapping | Partial: export copies have trim, gain, sample-peak limiter, dynamic normalization, pitch-preserving speed, bass/treble, fades and mono/stereo. Waveform, cut, pitch shift, two-pass EBU R128 and channel mapping missing. | `musicstudio/core/edit.py` |
 | Independent editor preview and atomic save with undo | Missing; export copies only. | `musicstudio/core/edit.py; history.py` |
 | Tags, provider metadata matching, artwork picker/cache/retry | Missing. | `musicstudio/core/tags.py; tag_fix.py; artwork.py` |
 | YouTube Music tag conventions and library organisation | Missing. | `musicstudio/core/ytmusic.py; organise.py` |
@@ -30,6 +30,8 @@ Initial audit: 2026-11-06. Compared original README and source/module inventory 
 - Install that exact verified build under this app’s D: folder and verify START.cmd opens it.
 - Preserve the original app and user data until replacement acceptance.
 
-## Current installation limitation
+## Installation and local builds
 
-No Rust compiler is installed locally. The agent terminal could not download build archives due to restricted network access. GitHub CI can compile them, but a successful CI run does not mean the binaries are installed on this PC.
+UPDATE.cmd installs the build pinned in `ci/latest-build.json`. That executable always comes from Windows CI (MSVC), and the checksum, source revision and run are verified before it is installed under `dist`. `scripts\verify-launch.ps1` then starts it through START.cmd and confirms the running file is that exact executable.
+
+This PC has no Visual Studio or Windows SDK, so local development uses GNU Rust plus a MinGW kit in this project's `.tools` folder (`scripts\install-rust.ps1`). Local GNU builds are for testing and are not installed. `scripts\release.py` mirrors this folder into the `.repo` clone and writes the build records from GitHub run data.
