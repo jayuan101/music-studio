@@ -1,0 +1,13 @@
+MusicStudio-Rust
+
+This is a separate project for MusicStudio-Rust only.
+Source: D:\Projects\MusicStudio-Rust
+Data: D:\UserData\Apps\MusicStudio-Rust
+Repository: https://github.com/jayuan101/music-studio
+
+INSTALL.cmd: choose this app's verified Windows build ZIP.
+START.cmd: start this app.
+BUILD.cmd: build this app locally after installing Rust/MSVC prerequisites.
+OPEN-PROJECT.cmd: open its development terminal with app-local D: paths.
+
+See README.md for feature limitations and validation status.
