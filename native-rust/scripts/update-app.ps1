@@ -32,7 +32,7 @@ try {
     $copy = $process.StandardOutput.BaseStream.CopyToAsync($stream)
     $errors = $process.StandardError.ReadToEndAsync()
     if (-not $process.WaitForExit(180000)) { $process.Kill(); $process.WaitForExit(); throw 'Download timed out. The installed app was not changed.' }
-    $copy.GetAwaiter().GetResult()
+    [void]$copy.GetAwaiter().GetResult()
     $errorText = $errors.GetAwaiter().GetResult()
     $stream.Dispose(); $stream = $null
     if ($process.ExitCode -ne 0) { throw ('Build download failed. Check gh authentication and network access. ' + $errorText) }

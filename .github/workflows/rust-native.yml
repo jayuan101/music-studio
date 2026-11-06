@@ -5,7 +5,7 @@ on:
   pull_request:
     types: [opened, synchronize, reopened, ready_for_review]
     branches: [main]
-    paths: ['native-rust/**', '.github/workflows/rust-native.yml']
+    paths: ['native-rust/**', '.github/workflows/rust-native.yml', '!native-rust/**/*.md', '!native-rust/VALIDATION.json', '!native-rust/ci/latest-build.json']
 
 permissions:
   contents: read

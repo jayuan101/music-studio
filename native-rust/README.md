@@ -2,7 +2,7 @@
 
 Standalone Rust Windows preview. This folder contains only this app, with its own Cargo workspace, build output, installer, launch button, and app-local support code. It does not depend on the other Rust project folders.
 
-Library/queue playback, playlists/M3U8, session restore and FFmpeg export copies with optional trim. Advanced editing, tags/artwork, waveform, replay gain, downloads, AI and updates are NOT ported. Originals are never edited by the export workflow.
+Library/queue playback, playlists/M3U8, session restore and FFmpeg export copies in ten formats with trim, gain, limiting, normalization, speed, EQ, fades and output-quality controls. Source files are never edited by export. Waveform, save-in-place, tags/artwork, ReplayGain, downloads and AI are not ported yet.
 
 ## Locations
 
@@ -14,16 +14,12 @@ Library/queue playback, playlists/M3U8, session restore and FFmpeg export copies
 - Repository: https://github.com/jayuan101/music-studio
 - Branch: `main`; source: `native-rust/`
 
-The original Windows app and its data remain unchanged. This source folder is synchronized through the connected GitHub API; it is not a local Git checkout.
+The original Windows app and its data remain unchanged. This folder holds the app's source; `.repo` is its Git clone, kept in step by `scripts\release.py sync`.
 
 ## Use
 
-Download **MusicStudio-Rust-windows** from the successful preview build in this app's pull request, then run `INSTALL.cmd` and select that ZIP. `ci/latest-build.json` pins the verified ZIP's checksum and source revision after the build succeeds. Run `START.cmd` to launch the installed preview.
+Run `UPDATE.cmd` to download and install the verified build pinned in `ci/latest-build.json` using your signed-in GitHub CLI. Close the running app first, then open `START.cmd`. `INSTALL.cmd` installs a manually downloaded build ZIP with the same checks.
 
-For a local build, open `OPEN-PROJECT.cmd`, run `scripts\install-rust.ps1` if needed, then `scripts\build.ps1`. Windows MSVC Build Tools/SDK are required; system-managed prerequisite files can live outside D:. The app and Rust project paths above stay on D:.
+For local development, open `OPEN-PROJECT.cmd`, run `scripts\install-rust.ps1` once, then `scripts\local-test.ps1`. Windows CI builds the executable that gets installed; local builds are for testing.
 
-Windows compilation and automated tests do not replace interactive UI/audio/WebView2 testing. These are previews, not full production replacements. See `VALIDATION.json` for the current build status. No live provider credentials or user recordings are used by tests.
-
-Full port work is tracked in [FEATURE-PARITY.md](FEATURE-PARITY.md).
-
-Run UPDATE.cmd to download and install the build pinned in ci/latest-build.json using your authenticated GitHub CLI. This installs the actual executable under this app's dist folder after checksum verification. Close the running Rust app and use START.cmd afterward. Expired pins require refreshed build metadata.
+Automated tests and a launch check do not replace trying each feature with real hardware and provider accounts. See `VALIDATION.json` for what has actually been checked and [FEATURE-PARITY.md](FEATURE-PARITY.md) for remaining work.

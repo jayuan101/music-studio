@@ -10,4 +10,11 @@ foreach ($directory in @($env:CARGO_HOME,$env:RUSTUP_HOME,$env:CARGO_TARGET_DIR,
     New-Item -ItemType Directory -Path $directory -Force | Out-Null
 }
 $env:PATH = (Join-Path $env:CARGO_HOME 'bin') + ';' + $env:PATH
+# Local GNU builds need the MinGW kit's assembler and linker. CI uses MSVC instead.
+$mingw = Join-Path $rustWorkspace '.tools\w64devkit\bin'
+if (Test-Path -LiteralPath $mingw) {
+    $env:PATH = $mingw + ';' + $env:PATH
+    # The kit supplies the assembler; Rust's own bundled linker has the runtime libraries.
+    $env:RUSTFLAGS = '-Clink-self-contained=yes'
+}
 Set-Location -LiteralPath $rustWorkspace
