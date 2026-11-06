@@ -1,5 +1,15 @@
 {
-  "state": "standalone-windows-validation-pending",
-  "interactive_tested": false,
-  "original_app_modified": false
+  "state": "standalone-windows-build-passed",
+  "sourceHead": "d20e01b9de6037b5b27c5a0f2f6b1cc9eecde87e",
+  "runId": "42294475420",
+  "testsPassed": 8,
+  "releaseBuild": "passed; exactly one app executable",
+  "importerChecks": "4 passed",
+  "projectIsolation": "passed; no dependencies on other app projects",
+  "interactiveTested": false,
+  "installedLocally": false,
+  "originalAppModified": false,
+  "knownLimitations": "See README.md and app/README.md",
+  "syntheticFFmpegExport": "passed locally: original hash/sample rate/channels retained, trim duration correct, existing output retained"
 }
+
